@@ -23,11 +23,12 @@ public final class KwsEngine {
     private static final String DECODER = DIR + "/decoder-epoch-13-avg-2-chunk-16-left-64.onnx";
     private static final String JOINER = DIR + "/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx";
     private static final String TOKENS = DIR + "/tokens.txt";
-    private static final String KEYWORDS = DIR + "/keywords.txt";
+    private static final String KEYWORDS = DIR + "/empty_keywords.txt";
 
     // First production baseline. Smoke config was 1.0f / 0.25f; the model was confirmed to fire.
     public static volatile float keywordsScore = 1.5f;
-    public static volatile float keywordsThreshold = 0.40f;
+    public static final float DEFAULT_THRESHOLD = 0.40f;
+    public static volatile float keywordsThreshold = DEFAULT_THRESHOLD;
     public static volatile int numTrailingBlanks = 1;
 
     private volatile KeywordSpotter spotter;
@@ -88,6 +89,8 @@ public final class KwsEngine {
         cfg.setFeatConfig(feat);
         cfg.setModelConfig(model);
         cfg.setMaxActivePaths(4);
+        // createStream(custom) ADDS to this file in sherpa-onnx. Keep it empty so changing the
+        // wake word replaces the default instead of leaving both phrases armed.
         cfg.setKeywordsFile(KEYWORDS);
         cfg.setKeywordsScore(keywordsScore);
         cfg.setKeywordsThreshold(keywordsThreshold);
@@ -99,14 +102,23 @@ public final class KwsEngine {
 
     public synchronized void newStream() {
         releaseStream();
-        String custom = customKeywordLine;
-        if (custom != null && !custom.isEmpty()) {
-            stream = spotter.createStream(custom);
-            L.i("KWS_STREAM_NEW custom=\"" + custom + "\"");
-        } else {
-            stream = spotter.createStream("");
-            L.i("KWS_STREAM_NEW asset");
+        String keywords = streamKeywords();
+        stream = spotter.createStream(keywords);
+        if (stream.getPtr() == 0) {
+            stream = null;
+            throw new IllegalStateException("Keyword spotter rejected the wake word");
         }
+        L.i("KWS_STREAM_NEW custom=\"" + keywords + "\"");
+    }
+
+    private static String streamKeywords() {
+        String line = customKeywordLine;
+        if (line == null || line.trim().isEmpty()) line = WakeWordStore.DEFAULT_LINE;
+        // Per-keyword overrides take effect without reloading the resident ONNX models.
+        int label = line.indexOf(" @");
+        String parameters = " :" + keywordsScore + " #" + keywordsThreshold;
+        return label < 0 ? line + parameters
+                : line.substring(0, label) + parameters + line.substring(label);
     }
 
     public synchronized void releaseStream() {
@@ -115,13 +127,14 @@ public final class KwsEngine {
         if (s != null) {
             try {
                 s.release();
-            } catch (Throwable ignored) {
+            } catch (Throwable error) {
+                L.e("KWS_STREAM_RELEASE_FAIL", error);
             }
         }
     }
 
     /** Feeds one frame and returns the detected keyword, or null. */
-    public String accept(float[] samples, int sampleRate) {
+    public synchronized String accept(float[] samples, int sampleRate) {
         KeywordSpotter sp = spotter;
         OnlineStream st = stream;
         if (sp == null || st == null) return null;
@@ -155,7 +168,8 @@ public final class KwsEngine {
         if (sp != null) {
             try {
                 sp.release();
-            } catch (Throwable ignored) {
+            } catch (Throwable error) {
+                L.e("KWS_MODEL_RELEASE_FAIL", error);
             }
         }
     }

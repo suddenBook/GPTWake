@@ -2,9 +2,11 @@ package com.desmond.gptwake;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.os.SystemClock;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Wake-word state machine. Every transition runs on one serial scheduled executor so that the
@@ -24,25 +26,33 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     private static final long VOICE_END_DEBOUNCE_MS = 1500;
     private static final long REACQUIRE_CONFIRM_MS = 3000;
 
+    // Also serializes teardown with the next service instance after a quick Stop/Start.
+    private static final ScheduledExecutorService EXEC =
+            Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "wake-state"));
+
     private final Context ctx;
-    private final KwsEngine kws = new KwsEngine();
-    private final ScheduledExecutorService exec =
-            Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "wake-state");
-                return t;
-            });
+    private final KwsEngine kws;
+    private final ScheduledExecutorService exec;
+    private final AtomicBoolean started = new AtomicBoolean();
+    private final AtomicBoolean stopped = new AtomicBoolean();
 
     private volatile State state = State.STOPPED;
     private long launchStartedAt;
     private boolean deeplinkTried;
     private long voiceEndCandidateSince;
     private long lastAcceptedHitMs;
-    private long rawHits;
-    private long acceptedHits;
-    private long suppressedHits;
+    private volatile long rawHits;
+    private volatile long acceptedHits;
+    private volatile long suppressedHits;
 
     public WakeController(Context c) {
+        this(c, new KwsEngine(), EXEC);
+    }
+
+    WakeController(Context c, KwsEngine kws, ScheduledExecutorService exec) {
         this.ctx = c.getApplicationContext();
+        this.kws = kws;
+        this.exec = exec;
     }
 
     public State state() {
@@ -54,6 +64,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     }
 
     private void set(State s) {
+        if (stopped.get() && s != State.STOPPED) return;
         if (state != s) {
             L.i("STATE " + state + " -> " + s);
             Measure.event("STATE", Measure.jstr("from", state.name()) + "," + Measure.jstr("to", s.name()));
@@ -62,33 +73,48 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     }
 
     public void start() {
-        exec.execute(() -> {
+        if (!started.compareAndSet(false, true)) return;
+        post(() -> {
             set(State.STARTING);
             AudioStateMonitor.install(ctx);
             KwsEngine.customKeywordLine = WakeWordStore.keywordLine(ctx);
+            KwsEngine.keywordsThreshold = WakeWordStore.threshold(ctx);
             L.i("WAKEWORD phrase=" + WakeWordStore.phrase(ctx));
             AudioStateMonitor.setListener(this);
             AudioProbe.bind(kws, this);
             AudioProbe.setFeeding(false);   // capture first, feed after the model is ready
-            AudioProbe.start("FGS");        // microphone up before the model is touched
+            boolean captureDeferred = hasCommunication();
+            if (!captureDeferred) AudioProbe.start("FGS");
             set(State.KWS_MODEL_LOADING);
-            loadModel();
+            loadModel(captureDeferred);
         });
     }
 
-    private void loadModel() {
+    private void loadModel(boolean captureDeferred) {
         try {
             AssetManager am = ctx.getAssets();
             kws.load(am);
+            if (stopped.get()) return;
+            if (hasCommunication()) {
+                pauseForCommunication();
+                return;
+            }
+            // A call may have ended while the model was loading, before any capture was started.
+            if (captureDeferred) AudioProbe.start("FGS");
             kws.newStream();
             AudioProbe.setFeeding(true);
-            set(State.KWS_LISTENING);
-            L.i("KWS_READY");
+            if (AudioProbe.isRunning()) {
+                set(State.KWS_LISTENING);
+                L.i("KWS_READY");
+            } else {
+                later(() -> {
+                    if (state == State.KWS_MODEL_LOADING && !AudioProbe.isRunning()) {
+                        fail("MIC_START_TIMEOUT", null);
+                    }
+                }, REACQUIRE_CONFIRM_MS);
+            }
         } catch (Throwable t) {
-            L.e("KWS_MODEL_LOAD_FAIL", t);
-            set(State.ERROR);
-            // Never hold the microphone hostage after a model failure.
-            AudioProbe.stop();
+            fail("KWS_MODEL_LOAD_FAIL", t);
         }
     }
 
@@ -96,15 +122,36 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
 
     @Override
     public void onFirstFrame() {
-        L.i("MIC_RECORDING confirmed");
+        post(() -> {
+            L.i("MIC_RECORDING confirmed");
+            if (state == State.KWS_MODEL_LOADING && kws.isLoaded() && AudioProbe.isRunning()) {
+                if (hasCommunication()) pauseForCommunication();
+                else {
+                    set(State.KWS_LISTENING);
+                    L.i("KWS_READY");
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onCaptureError(String reason) {
+        post(() -> {
+            if (state == State.KWS_LISTENING || state == State.KWS_MODEL_LOADING
+                    || state == State.KWS_REACQUIRING) fail("MIC_CAPTURE_FAIL " + reason, null);
+        });
     }
 
     @Override
     public void onKeyword(String keyword) {
-        exec.execute(() -> {
+        post(() -> {
+            if (state != State.KWS_LISTENING) {
+                L.i("KWS_HIT_IGNORED state=" + state);
+                return;
+            }
             rawHits++;
-            long now = System.currentTimeMillis();
-            if (now - lastAcceptedHitMs < Cfg.refractoryMs) {
+            long now = SystemClock.elapsedRealtime();
+            if (acceptedHits > 0 && now - lastAcceptedHitMs < Cfg.refractoryMs) {
                 suppressedHits++;
                 Measure.event("KWS_HIT", Measure.jstr("keyword", keyword)
                         + "," + Measure.jstr("class", "DUPLICATE_SUPPRESSED")
@@ -117,10 +164,6 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                         + " raw=" + rawHits + " accepted=" + acceptedHits
                         + " suppressed=" + suppressedHits);
                 resumeListening(false);
-                return;
-            }
-            if (state != State.KWS_LISTENING) {
-                L.i("KWS_HIT_IGNORED state=" + state + " raw=" + rawHits);
                 return;
             }
             lastAcceptedHitMs = now;
@@ -141,11 +184,9 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                 resumeListening(true);
                 return;
             }
-            if (AudioStateMonitor.hasRealCommunicationCapture()) {
+            if (hasCommunication()) {
                 L.i("EXTERNAL_COMMUNICATION_DETECTED at wake, not launching");
-                set(State.EXTERNAL_COMMUNICATION);
-                AudioProbe.setFeeding(false);
-                AudioProbe.stop();
+                pauseForCommunication();
                 return;
             }
             set(State.MIC_HANDOFF);
@@ -157,7 +198,12 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     private void resumeListening(boolean withRefractory) {
         AudioProbe.setFeeding(false);
         long delay = withRefractory ? Cfg.refractoryMs : 200;
-        exec.schedule(() -> {
+        later(() -> {
+            if (state != State.KWS_LISTENING) return;
+            if (hasCommunication()) {
+                pauseForCommunication();
+                return;
+            }
             if (!AudioProbe.isRunning()) {
                 L.i("KWS_RESUME_SKIPPED captureNotRunning");
                 return;
@@ -166,14 +212,15 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
             AudioProbe.setFeeding(true);
             set(State.KWS_LISTENING);
             L.i("KWS_RESUMED afterMs=" + delay);
-        }, delay, TimeUnit.MILLISECONDS);
+        }, delay);
     }
 
     /** Rebuilds the decoding stream so a new keyword or threshold takes effect immediately. */
     public void restartStream() {
-        exec.execute(() -> {
-            if (!kws.isLoaded()) {
-                L.i("STREAM_RESTART_SKIPPED modelNotLoaded");
+        post(() -> {
+            // New settings are read at the next stream creation after a call/handoff finishes.
+            if (state != State.KWS_LISTENING || !kws.isLoaded()) {
+                L.i("STREAM_RESTART_DEFERRED state=" + state);
                 return;
             }
             AudioProbe.setFeeding(false);
@@ -201,22 +248,25 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     }
 
     public void resetCounters() {
-        rawHits = 0;
-        acceptedHits = 0;
-        suppressedHits = 0;
-        lastAcceptedHitMs = 0;
-        L.i("KWS_COUNTERS_RESET");
+        post(() -> {
+            rawHits = 0;
+            acceptedHits = 0;
+            suppressedHits = 0;
+            lastAcceptedHitMs = 0;
+            L.i("KWS_COUNTERS_RESET");
+        });
     }
 
     private void handoff() {
-        long t0 = System.currentTimeMillis();
+        long t0 = SystemClock.elapsedRealtime();
         L.i("MIC_RELEASE_BEGIN");
         AudioProbe.setFeeding(false);
-        kws.releaseStream();
         AudioProbe.stop();                       // stop + join + release
+        kws.releaseStream();
 
-        long deadline = System.currentTimeMillis() + HANDOFF_CAPTURE_GONE_TIMEOUT_MS;
-        while (AudioStateMonitor.hasOwnCaptureConfig() && System.currentTimeMillis() < deadline) {
+        long deadline = SystemClock.elapsedRealtime() + HANDOFF_CAPTURE_GONE_TIMEOUT_MS;
+        while (!stopped.get() && AudioStateMonitor.hasOwnCaptureConfig()
+                && SystemClock.elapsedRealtime() < deadline) {
             try {
                 Thread.sleep(25);
             } catch (InterruptedException ignored) {
@@ -224,19 +274,24 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                 break;
             }
         }
-        L.i("MIC_RELEASE_DONE elapsedMs=" + (System.currentTimeMillis() - t0)
+        L.i("MIC_RELEASE_DONE elapsedMs=" + (SystemClock.elapsedRealtime() - t0)
                 + " ownConfigStillPresent=" + AudioStateMonitor.hasOwnCaptureConfig());
 
-        exec.schedule(this::launchChatGpt, HANDOFF_DRAIN_MS, TimeUnit.MILLISECONDS);
+        later(this::launchChatGpt, HANDOFF_DRAIN_MS);
     }
 
     private void launchChatGpt() {
+        if (state != State.MIC_HANDOFF) return;
+        if (hasCommunication()) {
+            pauseForCommunication();
+            return;
+        }
         set(State.CHATGPT_LAUNCHING);
-        launchStartedAt = System.currentTimeMillis();
+        launchStartedAt = SystemClock.elapsedRealtime();
         deeplinkTried = false;
         L.i("CHATGPT_LAUNCH_ATTEMPT route=AssistantActivity");
         GptLauncher.launchDirect(ctx);
-        exec.schedule(this::checkVoiceConfirm, VOICE_CONFIRM_MS, TimeUnit.MILLISECONDS);
+        later(this::checkVoiceConfirm, VOICE_CONFIRM_MS);
     }
 
     private void checkVoiceConfirm() {
@@ -247,11 +302,11 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
         }
         if (!deeplinkTried) {
             deeplinkTried = true;
-            L.i("VOICE_CONFIRM_TIMEOUT after=" + (System.currentTimeMillis() - launchStartedAt)
+            L.i("VOICE_CONFIRM_TIMEOUT after=" + (SystemClock.elapsedRealtime() - launchStartedAt)
                     + "ms, falling back once");
             L.i("CHATGPT_LAUNCH_ATTEMPT route=deeplink");
             GptLauncher.launchDeeplink(ctx);
-            exec.schedule(this::checkVoiceConfirm, DEEPLINK_CONFIRM_MS, TimeUnit.MILLISECONDS);
+            later(this::checkVoiceConfirm, DEEPLINK_CONFIRM_MS);
             return;
         }
         L.i("VOICE_CONFIRM_TIMEOUT final, giving up and restoring KWS");
@@ -259,7 +314,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     }
 
     private void confirmVoice() {
-        L.i("VOICE_CONFIRMED latencyMs=" + (System.currentTimeMillis() - launchStartedAt));
+        L.i("VOICE_CONFIRMED latencyMs=" + (SystemClock.elapsedRealtime() - launchStartedAt));
         set(State.VOICE_ACTIVE);
         voiceEndCandidateSince = 0;
     }
@@ -268,8 +323,13 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
 
     @Override
     public void onAudioStateChanged(String why) {
-        exec.execute(() -> {
+        post(() -> {
             switch (state) {
+                case KWS_LISTENING:
+                case KWS_MODEL_LOADING:
+                case KWS_REACQUIRING:
+                    if (hasCommunication()) pauseForCommunication();
+                    break;
                 case CHATGPT_LAUNCHING:
                     if (AudioStateMonitor.isVoiceConfirmed()) confirmVoice();
                     break;
@@ -277,8 +337,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                     evaluateVoiceEnd();
                     break;
                 case EXTERNAL_COMMUNICATION:
-                    if (!AudioStateMonitor.isCommunicationMode()
-                            && !AudioStateMonitor.hasRealCommunicationCapture()) {
+                    if (!hasCommunication()) {
                         L.i("EXTERNAL_COMMUNICATION ended");
                         reacquire();
                     }
@@ -292,16 +351,16 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     private void evaluateVoiceEnd() {
         boolean ended = !AudioStateMonitor.isCommunicationMode()
                 && !AudioStateMonitor.hasRealCommunicationCapture();
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
         if (!ended) {
             voiceEndCandidateSince = 0;
             return;
         }
         if (voiceEndCandidateSince == 0) {
             voiceEndCandidateSince = now;
-            exec.schedule(() -> {
+            later(() -> {
                 if (state == State.VOICE_ACTIVE) evaluateVoiceEnd();
-            }, VOICE_END_DEBOUNCE_MS + 100, TimeUnit.MILLISECONDS);
+            }, VOICE_END_DEBOUNCE_MS + 100);
             return;
         }
         if (now - voiceEndCandidateSince >= VOICE_END_DEBOUNCE_MS) {
@@ -312,8 +371,12 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
 
     /** Re-acquires the microphone inside the existing FGS. No ShimActivity on this path. */
     private void reacquire() {
+        if (hasCommunication()) {
+            pauseForCommunication();
+            return;
+        }
         set(State.KWS_REACQUIRING);
-        long t0 = System.currentTimeMillis();
+        long t0 = SystemClock.elapsedRealtime();
         L.i("MIC_REACQUIRE_BEGIN");
         AudioProbe.setFeeding(false);
         AudioProbe.start("REACQUIRE");
@@ -330,26 +393,69 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
             kws.newStream();
             AudioProbe.setFeeding(true);
             set(State.KWS_LISTENING);
-            L.i("MIC_REACQUIRE_OK latencyMs=" + (System.currentTimeMillis() - t0)
+            L.i("MIC_REACQUIRE_OK latencyMs=" + (SystemClock.elapsedRealtime() - t0)
                     + " attempts=" + attempt);
             L.i("KWS_READY");
             return;
         }
-        if (System.currentTimeMillis() - t0 >= REACQUIRE_CONFIRM_MS) {
+        if (SystemClock.elapsedRealtime() - t0 >= REACQUIRE_CONFIRM_MS) {
             L.i("MIC_REACQUIRE_FAIL running=" + running + " liveCapture=" + live
                     + " own=" + AudioStateMonitor.ownCaptureState());
-            set(State.ERROR);
+            fail("MIC_REACQUIRE_TIMEOUT", null);
             return;
         }
-        exec.schedule(() -> pollReacquire(t0, attempt + 1), 100, TimeUnit.MILLISECONDS);
+        later(() -> pollReacquire(t0, attempt + 1), 100);
     }
 
     public void stop() {
+        if (!stopped.compareAndSet(false, true)) return;
         exec.execute(() -> {
-            AudioProbe.setFeeding(false);
-            AudioProbe.stop();
-            kws.release();
-            set(State.STOPPED);
+            try {
+                AudioProbe.setFeeding(false);
+                AudioProbe.stop();
+                AudioProbe.bind(null, null);
+                AudioStateMonitor.clearListener(this);
+                kws.release();
+            } finally {
+                set(State.STOPPED);
+            }
         });
+    }
+
+    private static boolean hasCommunication() {
+        return AudioStateMonitor.isCommunicationMode()
+                || AudioStateMonitor.hasRealCommunicationCapture();
+    }
+
+    private void pauseForCommunication() {
+        set(State.EXTERNAL_COMMUNICATION);
+        AudioProbe.setFeeding(false);
+        AudioProbe.stop();
+        kws.releaseStream();
+    }
+
+    private void fail(String reason, Throwable error) {
+        L.e(reason, error);
+        AudioProbe.setFeeding(false);
+        AudioProbe.stop();
+        kws.releaseStream();
+        set(State.ERROR);
+    }
+
+    private void runIfActive(Runnable task) {
+        if (stopped.get()) return;
+        try {
+            task.run();
+        } catch (Throwable error) {
+            fail("WAKE_CONTROLLER_FAIL", error);
+        }
+    }
+
+    private void post(Runnable task) {
+        if (!stopped.get()) exec.execute(() -> runIfActive(task));
+    }
+
+    private void later(Runnable task, long delayMs) {
+        if (!stopped.get()) exec.schedule(() -> runIfActive(task), delayMs, TimeUnit.MILLISECONDS);
     }
 }

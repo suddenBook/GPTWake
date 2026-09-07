@@ -12,6 +12,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.ResultReceiver;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.IntentCompat;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class WakeService extends Service {
@@ -21,6 +22,7 @@ public class WakeService extends Service {
 
     /** Sent by the notification's Stop action. */
     static final String ACTION_STOP = "com.desmond.gptwake.STOP";
+    static final String ACTION_REFRESH = "com.desmond.gptwake.REFRESH";
 
     public static final String EXTRA_ACK = "ack";
     public static final String EXTRA_CYCLE = "cycle";
@@ -52,10 +54,21 @@ public class WakeService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         ResultReceiver ack = intent == null ? null
-                : intent.getParcelableExtra(EXTRA_ACK, ResultReceiver.class);
+                : IntentCompat.getParcelableExtra(intent, EXTRA_ACK, ResultReceiver.class);
 
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             L.i("MIC_FGS_STOP_FROM_NOTIFICATION");
+            Prefs.setListeningEnabled(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        if (intent != null && ACTION_REFRESH.equals(intent.getAction())) {
+            if (FOREGROUND.get()) refreshNotification();
+            else stopSelf();
+            return FOREGROUND.get() ? START_STICKY : START_NOT_STICKY;
+        }
+        if (intent == null && !Prefs.listeningEnabled(this)) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -66,6 +79,7 @@ public class WakeService extends Service {
                 startForeground(ID, buildNotification(),
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
                 FOREGROUND.set(true);
+                Prefs.setListeningEnabled(this, true);
                 L.i("MIC_FGS_START_OK");
             } catch (Throwable t) {
                 L.e("MIC_FGS_START_FAIL", t);
@@ -142,7 +156,7 @@ public class WakeService extends Service {
     /** Re-posts the notification so a changed wake phrase is reflected. No-op when not running. */
     static void refresh(android.content.Context context) {
         if (!FOREGROUND.get()) return;
-        context.startService(new Intent(context, WakeService.class));
+        context.startService(new Intent(context, WakeService.class).setAction(ACTION_REFRESH));
     }
 
     private void refreshNotification() {
@@ -191,7 +205,8 @@ public class WakeService extends Service {
         WakeController c = controller;
         controller = null;
         if (c != null) c.stop();
-        AudioProbe.stop();
+        else AudioProbe.stop();
+        if (bg != null) bg.removeCallbacksAndMessages(null);
         if (ht != null) ht.quitSafely();
         super.onDestroy();
     }

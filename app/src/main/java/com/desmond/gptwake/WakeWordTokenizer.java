@@ -123,6 +123,10 @@ public final class WakeWordTokenizer {
         return (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF);
     }
 
+    private static boolean isEnglishLetter(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    }
+
     public Result convert(String phrase) {
         if (!loaded) return Result.fail(Err.DICT_NOT_LOADED, null);
         if (phrase == null) return Result.fail(Err.EMPTY, null);
@@ -152,18 +156,22 @@ public final class WakeWordTokenizer {
                 i++;
                 continue;
             }
-            if (Character.isLetter(c) || c == '\'') {
+            if (isEnglishLetter(c) || c == '\'') {
                 int j = i;
                 while (j < p.length()
-                        && (Character.isLetter(p.charAt(j)) || p.charAt(j) == '\'')) j++;
+                        && (isEnglishLetter(p.charAt(j)) || p.charAt(j) == '\'')) j++;
                 String word = p.substring(i, j).toUpperCase(Locale.US);
                 String phones = english.get(word);
                 if (phones == null) {
                     return Result.fail(Err.UNKNOWN_ENGLISH, word);
                 }
-                for (String t : phones.split("\\s+")) tokens.add(t);
+                for (String t : phones.split("\\s+")) {
+                    tokens.add(t);
+                    // CMU vowel phones carry a stress digit; each represents one syllable.
+                    char stress = t.charAt(t.length() - 1);
+                    if (stress >= '0' && stress <= '2') syllables++;
+                }
                 readable.add(phones);
-                syllables += Math.max(1, word.length() / 3);
                 i = j;
                 continue;
             }

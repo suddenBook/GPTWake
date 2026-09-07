@@ -33,6 +33,19 @@ public final class WakeWordStore {
         L.i("WAKEWORD_RESET");
     }
 
+    public static float threshold(Context c) {
+        float value = sp(c).getFloat("threshold", KwsEngine.DEFAULT_THRESHOLD);
+        return Float.isFinite(value) && value >= 0f && value <= 1f
+                ? value : KwsEngine.DEFAULT_THRESHOLD;
+    }
+
+    public static void saveThreshold(Context c, float value) {
+        if (!Float.isFinite(value) || value < 0f || value > 1f) {
+            throw new IllegalArgumentException("Threshold must be between 0 and 1");
+        }
+        sp(c).edit().putFloat("threshold", value).apply();
+    }
+
     private WakeWordStore() {
     }
 }

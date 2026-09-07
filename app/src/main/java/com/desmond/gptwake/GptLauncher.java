@@ -18,7 +18,7 @@ public final class GptLauncher {
         try {
             PackageManager pm = context.getPackageManager();
             ActivityInfo info = pm.getActivityInfo(
-                    GPT_VOICE_COMPONENT, PackageManager.ComponentInfoFlags.of(0));
+                    GPT_VOICE_COMPONENT, 0);
             if (!info.exported) throw new IllegalStateException("AssistantActivity not exported");
             if (info.permission != null) {
                 throw new IllegalStateException("AssistantActivity needs " + info.permission);
@@ -49,36 +49,6 @@ public final class GptLauncher {
     }
 
     public static boolean launch(Context context) {
-        try {
-            PackageManager pm = context.getPackageManager();
-            ActivityInfo info = pm.getActivityInfo(
-                    GPT_VOICE_COMPONENT, PackageManager.ComponentInfoFlags.of(0));
-
-            if (!info.exported) throw new IllegalStateException("AssistantActivity not exported");
-            if (info.permission != null) {
-                throw new IllegalStateException("AssistantActivity needs " + info.permission);
-            }
-
-            Intent i = new Intent()
-                    .setComponent(GPT_VOICE_COMPONENT)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(i);
-            L.i("DIRECT_LAUNCH_OK");
-            return true;
-        } catch (Throwable t) {
-            L.e("DIRECT_LAUNCH_FAIL", t);
-        }
-
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://chat.com/?mode=voice"))
-                    .setPackage(GPT_PACKAGE)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(i);
-            L.i("DEEPLINK_LAUNCH_OK");
-            return true;
-        } catch (Throwable t) {
-            L.e("DEEPLINK_LAUNCH_FAIL", t);
-            return false;
-        }
+        return launchDirect(context) || launchDeeplink(context);
     }
 }

@@ -26,7 +26,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -66,6 +66,7 @@ jobs:
             echo "Failed to read versionCode/versionName from app/build.gradle.kts" >&2
             exit 1
           fi
+
           echo "name=$version_name" >> "$GITHUB_OUTPUT"
           echo "code=$version_code" >> "$GITHUB_OUTPUT"
           echo "tag=v$version_name" >> "$GITHUB_OUTPUT"
@@ -91,9 +92,9 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
           echo "keystore=$keystore" >> "$GITHUB_OUTPUT"
 
-      - name: Build unsigned release APK
+      - name: Run regression tests, lint, and build unsigned release APK
         shell: bash
-        run: ./gradlew --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
 
       - name: Align, sign, and verify APK
         shell: bash
@@ -117,7 +118,7 @@ jobs:
             ls -la app/build/outputs/apk/release || true
             exit 1
           fi
-          "$build_tools/zipalign" -p -f 4 "$unsigned_apk" "$RUNNER_TEMP/app-release-aligned.apk"
+          "$build_tools/zipalign" -P 16 -f 4 "$unsigned_apk" "$RUNNER_TEMP/app-release-aligned.apk"
           "$build_tools/apksigner" sign \
             --ks "$KEYSTORE_PATH" \
             --ks-key-alias "$ANDROID_KEY_ALIAS" \
@@ -126,11 +127,13 @@ jobs:
             --out "$APK_NAME" \
             "$RUNNER_TEMP/app-release-aligned.apk"
           "$build_tools/apksigner" verify --verbose --print-certs "$APK_NAME"
+          "$build_tools/zipalign" -c -P 16 4 "$APK_NAME"
 
       - name: Write release notes
         shell: bash
         env:
           APK_NAME: ${{ steps.version.outputs.apk }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
           cat > release-notes.md <<EOF
           Automated release for ${{ steps.version.outputs.tag }} (GPTWake).
@@ -147,6 +150,10 @@ jobs:
           After installing, grant the microphone, notification and "display over other apps"
           permissions, and leave ChatGPT as the system default assistant.
           EOF
+          if [[ -f "docs/releases/$VERSION_NAME.md" ]]; then
+            printf '\n' >> release-notes.md
+            cat "docs/releases/$VERSION_NAME.md" >> release-notes.md
+          fi
 
       - name: Create or update GitHub release
         shell: bash
@@ -170,3 +177,16 @@ jobs:
               --notes-file release-notes.md \
               --latest
           fi
+
+      - name: Retain test reports and release mapping
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ steps.version.outputs.tag }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 90
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/ui-snapshots/
+            app/build/reports/lint-results-release.*
+            app/build/outputs/mapping/release/mapping.txt

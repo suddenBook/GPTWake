@@ -20,6 +20,7 @@ public class ShimActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final AtomicBoolean finished = new AtomicBoolean(false);
     private boolean dispatched = false;
+    private boolean resumed;
 
     @Override
     protected void onCreate(Bundle s) {
@@ -34,19 +35,20 @@ public class ShimActivity extends Activity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         L.i("SHIM_WINDOW_FOCUS=" + hasFocus);
-        dispatch();
+        if (hasFocus) dispatch();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         L.i("SHIM_RESUME");
         // Some keyguard states never grant window focus; resume plus a short grace is enough.
         ui.postDelayed(this::dispatch, 300);
     }
 
     private synchronized void dispatch() {
-        if (dispatched) return;
+        if (dispatched || !resumed || isFinishing() || isDestroyed()) return;
         dispatched = true;
 
         String action = getIntent().getStringExtra(EXTRA_ACTION);
@@ -89,5 +91,17 @@ public class ShimActivity extends Activity {
             finish();
             overridePendingTransition(0, 0);
         }, delayMs);
+    }
+
+    @Override
+    protected void onPause() {
+        resumed = false;
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        ui.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 }

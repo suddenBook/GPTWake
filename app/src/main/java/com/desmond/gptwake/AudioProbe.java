@@ -4,6 +4,7 @@ import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -18,11 +19,15 @@ public final class AudioProbe {
     public interface WakeListener {
         void onKeyword(String keyword);
         void onFirstFrame();
+        void onCaptureError(String reason);
     }
 
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+    private static final AtomicBoolean RECORDING = new AtomicBoolean(false);
     private static final AtomicBoolean FEEDING = new AtomicBoolean(false);
     private static volatile Thread worker;
+    private static volatile AudioRecord activeRecord;
+    private static volatile int audioSessionId = -1;
     private static volatile String lastResult = "none";
     private static volatile KwsEngine engine;
     private static volatile WakeListener listener;
@@ -38,7 +43,11 @@ public final class AudioProbe {
     }
 
     public static boolean isRunning() {
-        return RUNNING.get();
+        return RUNNING.get() && RECORDING.get();
+    }
+
+    static int audioSessionId() {
+        return audioSessionId;
     }
 
     public static String lastResult() {
@@ -56,10 +65,12 @@ public final class AudioProbe {
     }
 
     public static synchronized void start(String who) {
-        if (!RUNNING.compareAndSet(false, true)) {
+        if (worker != null && worker.isAlive()) {
             L.i("AUDIO_ALREADY_RUNNING who=" + who);
             return;
         }
+        RUNNING.set(true);
+        RECORDING.set(false);
         worker = new Thread(() -> {
             ThreadCpu.publish("audio-capture");
             loop(who);
@@ -70,8 +81,18 @@ public final class AudioProbe {
 
     public static synchronized void stop() {
         RUNNING.set(false);
+        RECORDING.set(false);
+        FEEDING.set(false);
+        AudioRecord record = activeRecord;
+        if (record != null) {
+            try {
+                record.stop(); // Unblock read() before waiting for the capture thread.
+            } catch (IllegalStateException e) {
+                L.e("AUDIO_STOP_RECORD_FAIL", e);
+            }
+        }
         Thread t = worker;
-        if (t != null) {
+        if (t != null && t != Thread.currentThread()) {
             try {
                 t.join(3000);
                 L.i("AUDIO_JOIN_OK alive=" + t.isAlive());
@@ -79,8 +100,12 @@ public final class AudioProbe {
                 Thread.currentThread().interrupt();
             }
         }
-        worker = null;
-        L.i("AUDIO_STOPPED");
+        if (t == null || !t.isAlive()) {
+            worker = null;
+            L.i("AUDIO_STOPPED");
+        } else {
+            L.e("AUDIO_STOP_TIMEOUT", null);
+        }
     }
 
     private static double pct(double[] sorted, int cnt, double q) {
@@ -93,6 +118,7 @@ public final class AudioProbe {
 
     private static void loop(String who) {
         AudioRecord ar = null;
+        final WakeListener captureListener = listener;
         final short[] pcm = new short[FRAME_SAMPLES];
         final float[] frame = new float[FRAME_SAMPLES];
         final short[] acc = new short[FRAME_SAMPLES];
@@ -114,7 +140,6 @@ public final class AudioProbe {
             if (min <= 0) {
                 lastResult = "MIN_BUFFER_BAD";
                 L.i("AUDIO_MIN_BUFFER_BAD=" + min + " who=" + who);
-                RUNNING.set(false);
                 return;
             }
 
@@ -128,14 +153,17 @@ public final class AudioProbe {
                     .setBufferSizeInBytes(Math.max(min * 4, FRAME_SAMPLES * 2 * 8))
                     .build();
 
+            activeRecord = ar;
+            audioSessionId = ar.getAudioSessionId();
+
             L.i("AUDIO_BUILT who=" + who + " state=" + ar.getState());
             if (ar.getState() != AudioRecord.STATE_INITIALIZED) {
                 lastResult = "INIT_FAIL";
                 L.i("AUDIO_INIT_FAIL state=" + ar.getState() + " who=" + who);
-                RUNNING.set(false);
                 return;
             }
 
+            if (!RUNNING.get()) return;
             ar.startRecording();
             int rs = ar.getRecordingState();
             L.i("AUDIO_STARTRECORDING who=" + who + " recordingState="
@@ -143,7 +171,6 @@ public final class AudioProbe {
             if (rs != AudioRecord.RECORDSTATE_RECORDING) {
                 lastResult = "START_FAIL";
                 L.i("AUDIO_START_FAIL recState=" + rs + " who=" + who);
-                RUNNING.set(false);
                 return;
             }
             L.i("DIRECT_AUDIORECORD_OK who=" + who);
@@ -158,6 +185,7 @@ public final class AudioProbe {
                     break;
                 }
                 if (n == 0) continue;
+                if (!RUNNING.get()) break;
 
                 System.arraycopy(pcm, 0, acc, accLen, n);
                 accLen += n;
@@ -176,8 +204,9 @@ public final class AudioProbe {
 
                 if (!firstFrameSent) {
                     firstFrameSent = true;
-                    L.i("KWS_AUDIO_FIRST_FRAME rms=" + String.format("%.1f", rms) + " who=" + who);
-                    WakeListener l = listener;
+                    RECORDING.set(true);
+                    L.i("KWS_AUDIO_FIRST_FRAME rms=" + String.format(Locale.ROOT, "%.1f", rms) + " who=" + who);
+                    WakeListener l = captureListener;
                     if (l != null) l.onFirstFrame();
                 }
 
@@ -194,9 +223,9 @@ public final class AudioProbe {
 
                     if (hit != null) {
                         L.i("KWS_HIT keyword=" + hit + " timestamp=" + System.currentTimeMillis()
-                                + " rms=" + String.format("%.1f", rms));
+                                + " rms=" + String.format(Locale.ROOT, "%.1f", rms));
                         FEEDING.set(false);         // stop feeding immediately
-                        WakeListener l = listener;
+                        WakeListener l = captureListener;
                         if (l != null) l.onKeyword(hit);
                     }
                 }
@@ -218,7 +247,7 @@ public final class AudioProbe {
                     double p95 = pct(copy, cnt, 0.95);
                     double p99 = pct(copy, cnt, 0.99);
 
-                    L.i(String.format(
+                    L.i(String.format(Locale.ROOT,
                             "KWS_STATS mode=%s frames=%d framesDelta=%d decodes=%d "
                                     + "decodeAvgMs=%.2f decodeP50Ms=%.2f decodeP95Ms=%.2f decodeP99Ms=%.2f maxDecodeMs=%.2f "
                                     + "droppedFrames=%d rms=%.1f %s "
@@ -239,11 +268,11 @@ public final class AudioProbe {
                             + ",\"acceptCalls\":" + KwsEngine.acceptCalls.get()
                             + ",\"readyTrueCount\":" + KwsEngine.readyTrueCount.get()
                             + ",\"decodeCalls\":" + KwsEngine.decodeCalls.get()
-                            + String.format(",\"decodeAvgMs\":%.2f,\"decodeP50Ms\":%.2f,"
+                            + String.format(Locale.ROOT, ",\"decodeAvgMs\":%.2f,\"decodeP50Ms\":%.2f,"
                                     + "\"decodeP95Ms\":%.2f,\"decodeP99Ms\":%.2f,\"maxDecodeMs\":%.2f",
                                     decodes > 0 ? decodeSum / decodes : 0, p50, p95, p99, decodeMax)
                             + ",\"droppedFrames\":" + droppedFrames
-                            + String.format(",\"rms\":%.1f", rms)
+                            + String.format(Locale.ROOT, ",\"rms\":%.1f", rms)
                             + ",\"wallDeltaMs\":" + wallDelta
                             + ",\"cpuDeltaMs\":" + cpuDelta
                             + ",\"captureThreadCpuDeltaMs\":" + threadCpuDeltaMs);
@@ -258,7 +287,7 @@ public final class AudioProbe {
                     decodeIdx = 0;
                     Arrays.fill(decodeSamples, 0);
                 }
-                lastResult = "RECORDING rms=" + String.format("%.1f", rms);
+                lastResult = "RECORDING rms=" + String.format(Locale.ROOT, "%.1f", rms);
             }
         } catch (SecurityException se) {
             lastResult = "SECURITY_EXCEPTION";
@@ -273,10 +302,15 @@ public final class AudioProbe {
                     ar.release();
                     L.i("AUDIO_RELEASED who=" + who + " frames=" + frames);
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable error) {
+                L.e("AUDIO_RELEASE_FAIL", error);
             }
-            RUNNING.set(false);
+            activeRecord = null;
+            boolean failed = RUNNING.getAndSet(false);
+            RECORDING.set(false);
+            lastRms = 0;
             L.i("AUDIO_LOOP_EXIT who=" + who);
+            if (failed && captureListener != null) captureListener.onCaptureError(lastResult);
         }
     }
 }

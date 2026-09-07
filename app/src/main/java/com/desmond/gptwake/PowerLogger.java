@@ -1,5 +1,7 @@
 package com.desmond.gptwake;
 
+import java.util.Locale;
+
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -86,7 +88,7 @@ public final class PowerLogger {
             }
             tasks.append('}');
 
-            Measure.event("HEAVY", "\"tag\":\"" + tag + "\",\"phase\":\"" + phase + '"'
+            Measure.event("HEAVY", Measure.jstr("tag", tag) + "," + Measure.jstr("phase", phase)
                     + ",\"totalPssKb\":" + mi.getTotalPss()
                     + ",\"privateDirtyKb\":" + mi.getTotalPrivateDirty()
                     + ",\"privateCleanKb\":" + mi.getTotalPrivateClean()
@@ -129,14 +131,14 @@ public final class PowerLogger {
             long rssKb = Sys.rssKb();
 
             StringBuilder body = new StringBuilder();
-            body.append("\"tag\":\"").append(tag).append('"')
+            body.append(Measure.jstr("tag", tag))
                 // A run recorded while charging measures charge current, not app draw. The one
                 // measurement in this repo's history was taken plugged in, and its positive
                 // currentNowUA was read as if it were consumption. Make that impossible to miss.
                 .append(",\"onBattery\":").append(plugged == 0)
                 .append(",\"wallDeltaMs\":").append(wallDelta)
                 .append(",\"cpuDeltaMs\":").append(cpuDelta)
-                .append(String.format(",\"cpuOneCorePct\":%.2f",
+                .append(String.format(Locale.ROOT, ",\"cpuOneCorePct\":%.2f",
                         wallDelta > 0 ? cpuDelta * 100.0 / wallDelta : 0))
                 .append(",\"threadCpuDeltaMs\":").append(threads)
                 .append(',').append(num(bm, BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER, "chargeUAh"))
@@ -153,7 +155,7 @@ public final class PowerLogger {
 
             if (++seq % 6 == 0) {   // one logcat line per minute, the file stays authoritative
                 L.i("POWER tag=" + tag + " seq=" + seq
-                        + String.format(" cpuOneCorePct=%.2f", wallDelta > 0 ? cpuDelta * 100.0 / wallDelta : 0)
+                        + String.format(Locale.ROOT, " cpuOneCorePct=%.2f", wallDelta > 0 ? cpuDelta * 100.0 / wallDelta : 0)
                         + " levelPct=" + level + " tempDeciC=" + temp + " rssKb=" + rssKb
                         + (plugged == 0 ? "" : " PLUGGED_IN_NOT_A_DRAIN_MEASUREMENT"));
             }

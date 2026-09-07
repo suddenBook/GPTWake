@@ -22,8 +22,12 @@ public final class AudioStateMonitor {
 
     private static volatile Listener extListener;
 
-    public static void setListener(Listener l) {
+    public static synchronized void setListener(Listener l) {
         extListener = l;
+    }
+
+    public static synchronized void clearListener(Listener l) {
+        if (extListener == l) extListener = null;
     }
 
     private static void notifyListener(String why) {
@@ -137,13 +141,12 @@ public final class AudioStateMonitor {
         return isCommunicationMode() && hasRealCommunicationCapture();
     }
 
-    /** Reports whether our own capture is being silenced by the system. */
     /** True when our own VOICE_RECOGNITION capture is visible and not silenced. */
     public static boolean hasOwnLiveCapture() {
         List<AudioRecordingConfiguration> cfgs = configs();
         if (cfgs == null) return false;
         for (AudioRecordingConfiguration c : cfgs) {
-            if (c.getClientAudioSource() == MediaRecorder.AudioSource.VOICE_RECOGNITION
+            if (isOwnCapture(c)
                     && !c.isClientSilenced()) {
                 return true;
             }
@@ -155,7 +158,7 @@ public final class AudioStateMonitor {
         List<AudioRecordingConfiguration> cfgs = configs();
         if (cfgs == null) return false;
         for (AudioRecordingConfiguration c : cfgs) {
-            if (c.getClientAudioSource() == MediaRecorder.AudioSource.VOICE_RECOGNITION) return true;
+            if (isOwnCapture(c)) return true;
         }
         return false;
     }
@@ -164,7 +167,7 @@ public final class AudioStateMonitor {
         List<AudioRecordingConfiguration> cfgs = configs();
         if (cfgs == null) return "configs=null";
         for (AudioRecordingConfiguration c : cfgs) {
-            if (c.getClientAudioSource() == MediaRecorder.AudioSource.VOICE_RECOGNITION) {
+            if (isOwnCapture(c)) {
                 return "silenced=" + c.isClientSilenced();
             }
         }
@@ -173,6 +176,12 @@ public final class AudioStateMonitor {
 
     public static void dumpConfigs(String why) {
         logConfigs(why, configs());
+    }
+
+    private static boolean isOwnCapture(AudioRecordingConfiguration config) {
+        return AudioProbe.audioSessionId() > 0
+                && config.getClientAudioSessionId() == AudioProbe.audioSessionId()
+                && config.getClientAudioSource() == MediaRecorder.AudioSource.VOICE_RECOGNITION;
     }
 
     private static void logConfigs(String why, List<AudioRecordingConfiguration> cfgs) {

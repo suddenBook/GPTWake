@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.PendingIntent;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
+import androidx.core.os.BundleCompat;
 
 public class VoiceNotificationListener extends NotificationListenerService {
 
@@ -40,7 +41,7 @@ public class VoiceNotificationListener extends NotificationListenerService {
 
     private void capture(StatusBarNotification sbn) {
         Notification n = sbn.getNotification();
-        PendingIntent pi = n.extras.getParcelable(
+        PendingIntent pi = BundleCompat.getParcelable(n.extras,
                 Notification.EXTRA_HANG_UP_INTENT, PendingIntent.class);
         if (pi == null && n.actions != null && n.actions.length > 0) {
             pi = n.actions[0].actionIntent;

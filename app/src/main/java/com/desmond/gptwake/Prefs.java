@@ -20,4 +20,12 @@ public final class Prefs {
     public static void setMode(Context c, String m) {
         sp(c).edit().putString("mode", m).commit();
     }
+
+    public static boolean listeningEnabled(Context c) {
+        return sp(c).getBoolean("listening_enabled", false);
+    }
+
+    public static void setListeningEnabled(Context c, boolean enabled) {
+        sp(c).edit().putBoolean("listening_enabled", enabled).apply();
+    }
 }

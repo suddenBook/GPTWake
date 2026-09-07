@@ -45,6 +45,7 @@ public class ControlReceiver extends BroadcastReceiver {
                 }
                 break;
             case "micfgs_stop":
+                Prefs.setListeningEnabled(app, false);
                 app.stopService(new Intent(app, WakeService.class));
                 L.i("CTRL_MIC_FGS_STOP");
                 break;
@@ -198,6 +199,7 @@ public class ControlReceiver extends BroadcastReceiver {
                 KwsEngine.keywordsScore = intent.getFloatExtra("score", KwsEngine.keywordsScore);
                 KwsEngine.keywordsThreshold =
                         intent.getFloatExtra("threshold", KwsEngine.keywordsThreshold);
+                WakeWordStore.saveThreshold(app, KwsEngine.keywordsThreshold);
                 KwsEngine.numTrailingBlanks =
                         intent.getIntExtra("trailing", KwsEngine.numTrailingBlanks);
                 L.i("KWS_PARAMS_SET score=" + KwsEngine.keywordsScore

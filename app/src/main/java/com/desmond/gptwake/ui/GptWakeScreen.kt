@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -43,10 +44,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -86,13 +90,10 @@ fun GptWakeScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { inner ->
         BoxWithConstraints(Modifier.padding(inner).fillMaxSize()) {
-            val wide = maxWidth >= 840.dp
+            val readableWidth = maxWidth / LocalDensity.current.fontScale.coerceAtLeast(1f)
+            val wide = readableWidth >= 840.dp
+            val compact = readableWidth < 600.dp
             val gutter = if (maxWidth >= 600.dp) 24.dp else 16.dp
-            // On a tall tablet everything fits without scrolling, so let the log absorb the leftover
-            // height instead of leaving a dead band under the content. On shorter screens the whole
-            // column scrolls and the log takes its natural height.
-            val fillsHeight = maxHeight >= 820.dp
-
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 val frame = Modifier
                     .widthIn(max = 1400.dp)
@@ -100,55 +101,40 @@ fun GptWakeScreen(
                     .padding(horizontal = gutter)
                     .padding(bottom = 24.dp)
 
-                if (fillsHeight) {
-                    Column(
-                        frame.fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        screenBody(
-                            ui, permissions, tokenizer, wide,
-                            onRunStep, onToggleService, onRestartListening,
-                            onWakeWordApplied, onWakeWordReset,
-                            eventsModifier = Modifier.weight(1f),
-                        )
-                    }
-                } else {
-                    Column(
-                        frame.verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        screenBody(
-                            ui, permissions, tokenizer, wide,
-                            onRunStep, onToggleService, onRestartListening,
-                            onWakeWordApplied, onWakeWordReset,
-                            eventsModifier = Modifier,
-                        )
-                    }
+                // Available height alone cannot tell whether translated or enlarged text fits.
+                Column(
+                    frame.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    ScreenBody(
+                        ui, permissions, tokenizer, wide, compact,
+                        onRunStep, onToggleService, onRestartListening,
+                        onWakeWordApplied, onWakeWordReset,
+                    )
                 }
             }
         }
     }
 }
 
-/** Shared between the fill-height and scrolling variants so the two cannot drift apart. */
 @Composable
-private fun ColumnScope.screenBody(
+private fun ScreenBody(
     ui: WakeUiState,
     permissions: Permissions,
     tokenizer: WakeWordTokenizer?,
     wide: Boolean,
+    compact: Boolean,
     onRunStep: (SetupStep) -> Unit,
     onToggleService: () -> Unit,
     onRestartListening: () -> Unit,
     onWakeWordApplied: (String) -> Unit,
     onWakeWordReset: () -> Unit,
-    eventsModifier: Modifier,
 ) {
     if (permissions.next != SetupStep.DONE) {
-        SetupBanner(onContinue = { onRunStep(permissions.next) })
+        SetupBanner(compact, onContinue = { onRunStep(permissions.next) })
     }
 
-    StatusCard(ui = ui, onToggle = onToggleService)
+    StatusCard(ui = ui, compact = compact, onToggle = onToggleService)
 
     if (wide) {
         // IntrinsicSize.Max fixes the row to the taller column, then the last card in each column
@@ -180,7 +166,7 @@ private fun ColumnScope.screenBody(
     }
 
     // Full width: these lines are long and monospaced.
-    EventsCard(ui.events, eventsModifier)
+    EventsCard(ui.events)
 
     Text(
         stringResource(R.string.privacy_note),
@@ -194,11 +180,11 @@ private fun ColumnScope.screenBody(
 // ---------------------------------------------------------------- status
 
 @Composable
-private fun StatusCard(ui: WakeUiState, onToggle: () -> Unit) {
+private fun StatusCard(ui: WakeUiState, compact: Boolean, onToggle: () -> Unit) {
     val context = LocalContext.current
     val mode = ui.state.toIndicatorMode(ui.foreground)
     val level by rememberMicLevel(active = ui.state.isLive())
-    val phrase = remember(ui.state) { WakeWordStore.phrase(context) }
+    val phrase = WakeWordStore.phrase(context)
 
     // The container carries the state, so the card is readable across the room without reading any
     // text. Colour is effects motion — critically damped, so it never overshoots.
@@ -237,13 +223,11 @@ private fun StatusCard(ui: WakeUiState, onToggle: () -> Unit) {
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
-                // Always filled: a tonal button on a tonal container disappears.
-                Button(onToggle) {
-                    Text(
-                        stringResource(
-                            if (ui.foreground) R.string.action_stop else R.string.action_start
-                        )
-                    )
+                if (!compact) ServiceButton(ui.foreground, onToggle)
+            }
+            if (compact) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    ServiceButton(ui.foreground, onToggle)
                 }
             }
 
@@ -266,9 +250,16 @@ private fun StatusCard(ui: WakeUiState, onToggle: () -> Unit) {
 }
 
 @Composable
+private fun ServiceButton(running: Boolean, onToggle: () -> Unit) {
+    Button(onToggle) {
+        Text(stringResource(if (running) R.string.action_stop else R.string.action_start))
+    }
+}
+
+@Composable
 private fun statusLabel(ui: WakeUiState): String = when (ui.state) {
     WakeController.State.KWS_LISTENING ->
-        if (Cfg.evalMode) stringResource(R.string.status_listening_test)
+        if (ui.evalMode) stringResource(R.string.status_listening_test)
         else stringResource(R.string.status_listening)
 
     WakeController.State.STARTING,
@@ -289,7 +280,7 @@ private fun statusLabel(ui: WakeUiState): String = when (ui.state) {
 // ---------------------------------------------------------------- setup banner
 
 @Composable
-private fun SetupBanner(onContinue: () -> Unit) {
+private fun SetupBanner(compact: Boolean, onContinue: () -> Unit) {
     Card(
         Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
@@ -298,23 +289,34 @@ private fun SetupBanner(onContinue: () -> Unit) {
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         ),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(24.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f).padding(end = 16.dp)) {
-                Text(
-                    stringResource(R.string.setup_incomplete_title),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    stringResource(R.string.setup_incomplete_body),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
+        if (compact) {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                SetupExplanation()
+                Button(onContinue, modifier = Modifier.align(Alignment.End)) {
+                    Text(stringResource(R.string.action_continue))
+                }
             }
-            Button(onContinue) { Text(stringResource(R.string.action_continue)) }
+        } else {
+            Row(
+                Modifier.fillMaxWidth().padding(24.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SetupExplanation(Modifier.weight(1f).padding(end = 16.dp))
+                Button(onContinue) { Text(stringResource(R.string.action_continue)) }
+            }
         }
+    }
+}
+
+@Composable
+private fun SetupExplanation(modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(stringResource(R.string.setup_incomplete_title), style = MaterialTheme.typography.titleMedium)
+        Text(
+            stringResource(R.string.setup_incomplete_body),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
@@ -327,7 +329,7 @@ private fun WakeWordCard(
     onReset: () -> Unit,
 ) {
     val context = LocalContext.current
-    var typed by remember { mutableStateOf("") }
+    var typed by rememberSaveable { mutableStateOf("") }
     var revision by remember { mutableIntStateOf(0) }
     val current = remember(revision) { WakeWordStore.phrase(context) }
     val currentTokens = remember(revision) {
@@ -367,7 +369,7 @@ private fun WakeWordCard(
             message != null -> Text(
                 message,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (result!!.ok) MaterialTheme.colorScheme.tertiary
+                color = if (result.ok) MaterialTheme.colorScheme.tertiary
                 else MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -442,11 +444,12 @@ private fun WakeWordTokenizer.Result.messageOrNull(): String? = when (err) {
 
 @Composable
 private fun SensitivityCard(onCommit: () -> Unit, modifier: Modifier = Modifier) {
-    var value by remember { mutableFloatStateOf(KwsEngine.keywordsThreshold) }
+    val context = LocalContext.current
+    var value by remember { mutableFloatStateOf(WakeWordStore.threshold(context).coerceIn(0.20f, 0.60f)) }
 
     SectionCard(stringResource(R.string.sensitivity_title), modifier = modifier, trailing = {
         Text(
-            String.format("%.2f", value),
+            String.format(LocalLocale.current.platformLocale, "%.2f", value),
             style = MaterialTheme.typography.titleMedium,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.primary,
@@ -457,6 +460,7 @@ private fun SensitivityCard(onCommit: () -> Unit, modifier: Modifier = Modifier)
             onValueChange = { value = it },
             onValueChangeFinished = {
                 KwsEngine.keywordsThreshold = value
+                WakeWordStore.saveThreshold(context, value)
                 onCommit()
             },
             valueRange = 0.20f..0.60f,
@@ -583,8 +587,9 @@ private fun EventsCard(events: List<String>, modifier: Modifier = Modifier) {
             modifier = Modifier
                 .padding(top = 8.dp)
                 .fillMaxWidth()
-                // Newest entries matter most, so overflow scrolls rather than truncating; long
-                // lines scroll sideways instead of wrapping into an unreadable block.
+                .heightIn(max = 240.dp)
+                // This scroll container is inside the page's vertical scroll, so it needs a
+                // finite height. Long lines can still be read by scrolling horizontally.
                 .verticalScroll(rememberScrollState())
                 .horizontalScroll(rememberScrollState()),
         )

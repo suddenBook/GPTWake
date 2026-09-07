@@ -15,6 +15,7 @@ import java.util.TimeZone;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicLong;
+import org.json.JSONObject;
 
 /**
  * Authoritative measurement record. One JSONL file per run in device-protected storage, written by
@@ -51,28 +52,30 @@ public final class Measure {
     }
 
     public static void start(Context c, String id, String runMode, String meta) {
+        final long requestedAt = SystemClock.elapsedRealtimeNanos();
         WRITER.execute(() -> {
             try {
                 closeQuietly("superseded");
                 runId = id;
                 mode = runMode;
                 SEQ.set(0);
-                runStartElapsedNs = SystemClock.elapsedRealtimeNanos();
+                runStartElapsedNs = requestedAt;
 
                 SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", Locale.US);
                 f.setTimeZone(TimeZone.getTimeZone("UTC"));
                 String base = f.format(new Date()) + "-" + id + "-" + runMode;
-                partial = new File(dir(c), base + ".jsonl.partial");
-                finalFile = new File(dir(c), base + ".jsonl");
+                partial = File.createTempFile(base.replaceAll("[^A-Za-z0-9._-]", "_") + "-",
+                        ".jsonl.partial", dir(c));
+                finalFile = new File(dir(c), partial.getName().replaceFirst("\\.partial$", ""));
 
                 fos = new FileOutputStream(partial, false);
                 out = new BufferedWriter(new OutputStreamWriter(fos, StandardCharsets.UTF_8), 1 << 16);
                 lastFlushMs = System.currentTimeMillis();
 
-                writeLine("{\"type\":\"RUN_START\",\"runId\":\"" + id + "\",\"mode\":\"" + runMode
-                        + "\",\"seq\":0,\"elapsedNs\":" + runStartElapsedNs
+                writeLine("{\"type\":\"RUN_START\"," + jstr("runId", id) + "," + jstr("mode", runMode)
+                        + ",\"seq\":0,\"elapsedNs\":" + runStartElapsedNs
                         + ",\"wallUtc\":\"" + isoNow() + "\""
-                        + ",\"keywordSha256\":\"5cca9d3d18a4ee883d72a600165cb071de26c8f39d6a2d0d0acc74520783855f\""
+                        + "," + jstr("keywordSha256", keywordHash(c))
                         + ",\"score\":" + KwsEngine.keywordsScore
                         + ",\"threshold\":" + KwsEngine.keywordsThreshold
                         + ",\"trailing\":" + KwsEngine.numTrailingBlanks
@@ -89,12 +92,12 @@ public final class Measure {
 
     /** JSON object body without the surrounding braces; seq / elapsedNs are added here. */
     public static void event(String type, String bodyJson) {
-        final long seq = SEQ.incrementAndGet();
         final long ns = SystemClock.elapsedRealtimeNanos();
         WRITER.execute(() -> {
             if (out == null) return;
             try {
-                writeLine("{\"type\":\"" + type + "\",\"seq\":" + seq + ",\"elapsedNs\":" + ns
+                long seq = SEQ.incrementAndGet();
+                writeLine("{" + jstr("type", type) + ",\"seq\":" + seq + ",\"elapsedNs\":" + ns
                         + ",\"sinceRunMs\":" + ((ns - runStartElapsedNs) / 1_000_000L)
                         + (bodyJson == null || bodyJson.isEmpty() ? "" : "," + bodyJson) + "}");
                 long now = System.currentTimeMillis();
@@ -117,7 +120,7 @@ public final class Measure {
         try {
             long dur = (SystemClock.elapsedRealtimeNanos() - runStartElapsedNs) / 1_000_000L;
             writeLine("{\"type\":\"RUN_END\",\"seq\":" + SEQ.incrementAndGet()
-                    + ",\"reason\":\"" + reason + "\",\"durationMs\":" + dur
+                    + "," + jstr("reason", reason) + ",\"durationMs\":" + dur
                     + ",\"samples\":" + SEQ.get() + ",\"wallUtc\":\"" + isoNow() + "\"}");
             out.flush();
             fos.getFD().sync();                       // durable only at run end
@@ -164,7 +167,15 @@ public final class Measure {
     }
 
     public static String jstr(String k, String v) {
-        return "\"" + k + "\":\"" + (v == null ? "" : v.replace("\"", "'")) + "\"";
+        return JSONObject.quote(k) + ":" + JSONObject.quote(v == null ? "" : v);
+    }
+
+    private static String keywordHash(Context context) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(
+                WakeWordStore.keywordLine(context).getBytes(StandardCharsets.UTF_8));
+        StringBuilder result = new StringBuilder();
+        for (byte value : digest) result.append(String.format(Locale.ROOT, "%02x", value));
+        return result.toString();
     }
 
     private Measure() {

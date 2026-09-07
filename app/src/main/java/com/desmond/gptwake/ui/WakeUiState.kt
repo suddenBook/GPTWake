@@ -8,7 +8,9 @@ import android.provider.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.desmond.gptwake.AudioProbe
 import com.desmond.gptwake.Cfg
 import com.desmond.gptwake.L
@@ -30,6 +32,7 @@ data class WakeUiState(
     val micRunning: Boolean,
     val counters: String,
     val events: List<String>,
+    val evalMode: Boolean = false,
 )
 
 /** Which setup step is still outstanding. Ordered; the banner offers the first unsatisfied one. */
@@ -41,6 +44,13 @@ data class Permissions(
     val overlay: Boolean,
     val assistant: Boolean,
 ) {
+    val listeningStep: SetupStep
+        get() = when {
+            !mic -> SetupStep.MIC
+            !overlay -> SetupStep.OVERLAY
+            else -> SetupStep.DONE
+        }
+
     val next: SetupStep
         get() = when {
             !mic -> SetupStep.MIC
@@ -69,24 +79,31 @@ fun readPermissions(context: Context) = Permissions(
     // ChatGPT must hold the assistant role or it cannot record under keyguard. This app must never
     // take that role for itself.
     assistant = Settings.Secure.getString(context.contentResolver, "voice_interaction_service")
-        ?.startsWith("com.openai.chatgpt") == true,
+        ?.let(android.content.ComponentName::unflattenFromString)
+        ?.packageName == "com.openai.chatgpt",
 )
 
 /** Engine state. 700ms matches the old refresh cadence and is plenty for text that reads as prose. */
 @Composable
-fun rememberWakeUiState(): State<WakeUiState> = produceState(
-    initialValue = WakeUiState(null, false, false, "", emptyList())
-) {
-    while (true) {
-        val controller = WakeService.controller()
-        value = WakeUiState(
-            state = controller?.state(),
-            foreground = WakeService.isForegroundNow(),
-            micRunning = AudioProbe.isRunning(),
-            counters = controller?.counters().orEmpty(),
-            events = recentEvents(),
-        )
-        delay(700)
+fun rememberWakeUiState(): State<WakeUiState> {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    return produceState(
+        initialValue = WakeUiState(null, false, false, "", emptyList()), lifecycle
+    ) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val controller = WakeService.controller()
+                value = WakeUiState(
+                    state = controller?.state(),
+                    foreground = WakeService.isForegroundNow(),
+                    micRunning = AudioProbe.isRunning(),
+                    counters = controller?.counters().orEmpty(),
+                    events = recentEvents(),
+                    evalMode = Cfg.evalMode,
+                )
+                delay(700)
+            }
+        }
     }
 }
 
@@ -95,12 +112,15 @@ fun rememberWakeUiState(): State<WakeUiState> = produceState(
  * The old code spent four binder calls every 700ms re-deriving it.
  */
 @Composable
-fun rememberPermissions(context: Context): State<Permissions> = produceState(
-    initialValue = readPermissions(context), context
-) {
-    while (true) {
-        value = readPermissions(context)
-        delay(1500)
+fun rememberPermissions(context: Context): State<Permissions> {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    return produceState(initialValue = readPermissions(context), context, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                value = readPermissions(context)
+                delay(1500)
+            }
+        }
     }
 }
 
@@ -109,19 +129,23 @@ fun rememberPermissions(context: Context): State<Permissions> = produceState(
  * immediate; each tick is one volatile read plus an exponential smoothing step.
  */
 @Composable
-fun rememberMicLevel(active: Boolean): State<Float> = produceState(0f, active) {
-    if (!active) {
-        value = 0f
-        return@produceState
-    }
-    var smoothed = 0f
-    while (true) {
-        // The historical UI mapped rms/20 onto 0..100, i.e. full scale at rms 2000.
-        val raw = (AudioProbe.lastRms() / 2000.0).toFloat().coerceIn(0f, 1f)
-        // Rise fast so a spoken word registers, fall slowly so it does not flicker.
-        smoothed = if (raw > smoothed) raw else smoothed + (raw - smoothed) * 0.25f
-        value = smoothed
-        delay(80)
+fun rememberMicLevel(active: Boolean): State<Float> {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    return produceState(0f, active, lifecycle) {
+        if (!active) {
+            value = 0f
+            return@produceState
+        }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var smoothed = 0f
+            while (true) {
+                // Full scale at rms 2000. Rise immediately; decay gradually to avoid flicker.
+                val raw = (AudioProbe.lastRms() / 2000.0).toFloat().coerceIn(0f, 1f)
+                smoothed = if (raw > smoothed) raw else smoothed + (raw - smoothed) * 0.25f
+                value = smoothed
+                delay(80)
+            }
+        }
     }
 }
 

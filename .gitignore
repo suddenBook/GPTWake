@@ -6,3 +6,4 @@ local.properties
 .gradle/
 app/build/
 measurements/
+.kotlin/

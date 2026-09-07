@@ -6,13 +6,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,7 +35,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     /** Bumped whenever we return from a permission flow, to force an immediate re-read. */
-    private var permissionRevision by mutableStateOf(0)
+    private var permissionRevision by mutableIntStateOf(0)
 
     private val requestPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -53,6 +54,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         AudioStateMonitor.install(this)
+        KwsEngine.keywordsThreshold = WakeWordStore.threshold(this)
 
         setContent {
             GptWakeTheme {
@@ -115,7 +117,9 @@ class MainActivity : ComponentActivity() {
         if (!autoPrompted) {
             autoPrompted = true
             val step = readPermissions(this).next
-            if (step == SetupStep.MIC || step == SetupStep.NOTIFICATIONS) runStep(step)
+            if (step == SetupStep.MIC && !hasBeenAsked(Manifest.permission.RECORD_AUDIO) ||
+                step == SetupStep.NOTIFICATIONS && !hasBeenAsked(Manifest.permission.POST_NOTIFICATIONS)
+            ) runStep(step)
         }
     }
 
@@ -170,18 +174,22 @@ class MainActivity : ComponentActivity() {
 
     private fun launch(intent: Intent) {
         runCatching { openSettings.launch(intent) }
-            .onFailure { L.e("LAUNCH_SETTINGS_FAIL", it) }
+            .onFailure {
+                L.e("LAUNCH_SETTINGS_FAIL", it)
+                Toast.makeText(this, R.string.msg_no_settings_page, Toast.LENGTH_LONG).show()
+            }
     }
 
     // ---------------- listening ----------------
 
     private fun toggleService() {
         if (WakeService.isForegroundNow()) {
+            Prefs.setListeningEnabled(this, false)
             stopService(Intent(this, WakeService::class.java))
             return
         }
-        val step = readPermissions(this).next
-        if (step == SetupStep.MIC || step == SetupStep.OVERLAY) {
+        val step = readPermissions(this).listeningStep
+        if (step != SetupStep.DONE) {
             runStep(step)
             return
         }

@@ -1,5 +1,7 @@
 package com.desmond.gptwake;
 
+import java.util.Locale;
+
 import android.content.Context;
 import android.os.SystemClock;
 
@@ -16,7 +18,7 @@ public final class TrialLog {
 
     public static synchronized void begin(Context c, String distance, int index, long raw,
                                           long accepted, long suppressed) {
-        currentTrial = distance + "-" + String.format("%02d", index);
+        currentTrial = distance + "-" + String.format(Locale.ROOT, "%02d", index);
         currentDistance = distance;
         beginNs = SystemClock.elapsedRealtimeNanos();
         beginRaw = raw;

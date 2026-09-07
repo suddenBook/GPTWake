@@ -9,7 +9,8 @@ The default wake phrase is `芝麻开门`, and any Chinese or English phrase can
 inside the app: the phrase is converted to the model's phoneme and pinyin tokens on device, with no
 network access and no repackaging. Sensitivity is adjustable, a test mode logs hits without opening
 ChatGPT, and listening pauses automatically when a phone or VoIP call is detected. Listening
-resumes automatically after a reboot, before the first unlock.
+resumes automatically after a reboot, before the first unlock, if it was left enabled. Pressing
+Stop also disables listening on the next boot.
 
 ---
 
@@ -79,8 +80,10 @@ The UI is Jetpack Compose using Material 3 Expressive: `MaterialExpressiveTheme`
 `MotionScheme.expressive()`, dynamic color on API 31 and above, and a status indicator that morphs
 between `MaterialShapes.Cookie9Sided` and `Sunny` while being scaled by live microphone amplitude.
 Card container color encodes engine state, so the current state is readable without reading text.
-Above 840 dp the status card spans the full width and the remaining cards split into two columns by
-role; the event log is always full width because its lines are long and monospaced.
+At a readable width of 840 dp the status card spans the full width and the remaining cards split
+into two columns by role; larger font sizes increase that breakpoint. The page stays scrollable
+at every window size. The full-width event log has a bounded scrolling viewport, so it can be
+nested safely inside the page on phones, in landscape, and in split screen.
 
 The Expressive components ship in no stable release. They appeared in `material3 1.4.0-alpha18`,
 were removed before `1.4.0-beta01`, and currently exist only in `1.5.0-alpha24`. On stable `1.4.0`
@@ -109,7 +112,7 @@ reads engine state through `produceState` polling, so no engine class has a Comp
 
 ### Requirements
 
-- Android 13 or later (`minSdk 32`); verified on Android 16, Lenovo TB355FU
+- Android 12L or later (`minSdk 32`); lock-screen voice previously verified on Android 16, Lenovo TB355FU
 - `arm64-v8a` only
 - The official ChatGPT app, installed and signed in
 
@@ -125,7 +128,7 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Building requires JDK 17, AGP 9.3.1 or later, and the `platforms;android-37.0` and
+Building and running the checks requires JDK 21, AGP 9.3.1, and the `platforms;android-37.0` and
 `build-tools;37.0.0` SDK packages. `compileSdk` is 37 because `compose.ui 1.12.0-beta02` requires
 it; `targetSdk` remains 36.
 
@@ -166,6 +169,16 @@ them. Recall is strongly phrase-dependent; the default phrase measures 8/10 at c
 
 ### Testing
 
+Run the local regression suite and Android lint before releasing:
+
+```bash
+./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+```
+
+The suite runs Compose layouts on simulated Android devices, exercises the service state machine,
+checks Android 12L compatibility, and tests keyword settings and capture lifecycle behavior.
+See [testing details](docs/testing.md) for the native-model check and device validation scope.
+
 `testkit.sh` drives the debug control receiver over adb.
 
 ```bash
@@ -183,7 +196,13 @@ Set `ANDROID_SERIAL` if more than one device is attached.
 Pushing to `main` triggers `.github/workflows/release.yml`, which builds a release APK, signs it
 with `zipalign` and `apksigner`, and creates or updates the GitHub release tagged `v<versionName>`.
 Gradle produces an unsigned APK and signing happens only in CI, so no signing material is stored in
-the repository. Four repository secrets are required:
+the repository.
+
+The workflow gates releases on regression tests and lint, preserves 16 KB native-library alignment,
+and retains the R8 mapping and test reports for diagnosing future crash reports. Bump both
+`versionCode` and `versionName` in `app/build.gradle.kts` for a new release.
+
+Four repository secrets are required:
 
 | Secret | Value |
 |---|---|

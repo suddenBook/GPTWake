@@ -18,6 +18,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asComposePath
 import androidx.graphics.shapes.Morph
 import androidx.graphics.shapes.toPath
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlin.math.max
 
 /**
@@ -71,9 +74,7 @@ fun ListeningIndicator(
         return
     }
 
-    // Deliberately far apart so the morph actually reads at a glance: a 9-lobed cookie relaxing
-    // into a soft sun. Both are normalised around (0,0) with radius 1, so they span -1..1 and the
-    // draw step has to map that onto the real size.
+    // Morph a 9-lobed cookie into a sun, fitting the shared bounds to the canvas below.
     val morph = remember { Morph(start = MaterialShapes.Cookie9Sided, end = MaterialShapes.Sunny) }
 
     // Reused across frames so the draw phase allocates nothing. The Compose wrapper stays bound to
@@ -83,16 +84,19 @@ fun ListeningIndicator(
     val matrix = remember { android.graphics.Matrix() }
 
     val progress = remember { Animatable(0f) }
-    LaunchedEffect(mode) {
-        val period = mode.periodMs
-        if (period == null) {
-            // Settle and stop. Nothing is left running: this screen sits open on a device that is
-            // listening all day.
-            progress.animateTo(0f, tween(300))
-        } else {
-            while (true) {
-                progress.animateTo(1f, tween(period, easing = LinearEasing))
-                progress.animateTo(0f, tween(period, easing = LinearEasing))
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(mode, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            val period = mode.periodMs
+            if (period == null) {
+                // Settle and stop. Nothing is left running: this screen sits open on a device that is
+                // listening all day.
+                progress.animateTo(0f, tween(300))
+            } else {
+                while (true) {
+                    progress.animateTo(1f, tween(period, easing = LinearEasing))
+                    progress.animateTo(0f, tween(period, easing = LinearEasing))
+                }
             }
         }
     }

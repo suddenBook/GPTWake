@@ -14,8 +14,8 @@ android {
         applicationId = "com.desmond.gptwake"
         minSdk = 32
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -28,6 +28,10 @@ android {
     buildFeatures {
         viewBinding = false
         compose = true
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 
     compileOptions {
@@ -107,6 +111,12 @@ dependencies {
 
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.core:core:1.17.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("org.mockito:mockito-core:5.23.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // The Views stack (appcompat, com.google.android.material, constraintlayout) is gone along
     // with MainActivity.java and activity_main.xml. Nothing in the app references it any more.
