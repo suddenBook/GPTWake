@@ -22,6 +22,9 @@ test reports, and UI snapshots as a diagnostics artifact for 90 days.
   completes.
 - Check Direct Boot preferences, boot prerequisites, permission ordering, Android 12L APIs,
   mixed Chinese/English tokenization, syllable warnings, and diagnostic JSON.
+- Check Japanese readings, language selection, complete-phrase matching, bounded asynchronous
+  decoding, stale results after edits/calls, native shutdown and Japanese layouts. Check that
+  measurement records retain the language and phrase identity captured when the run was requested.
 
 The original phone-layout test reproduced the exact infinite-height exception from issue #1
 before the layout fix. The concurrency test also fails when synchronization is removed.
@@ -49,6 +52,36 @@ threshold affects detections without reloading the model. The empty base keyword
 intentional: sherpa-onnx adds custom stream keywords to its base file.
 
 ## Device scope
+
+Japanese inference can be checked on Linux with committed synthetic fixtures:
+
+```bash
+bash tools/fetch-japanese-deps.sh
+python3 -m venv /tmp/gptwake-native-venv
+/tmp/gptwake-native-venv/bin/pip install -r tools/requirements-native.txt
+/tmp/gptwake-native-venv/bin/python tools/test_native_japanese.py
+```
+
+To exercise the actual Android JNI libraries and packaged models on an attached arm64 device:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest
+```
+
+The Japanese instrumentation tests require no microphone permission and feed synthetic PCM.
+They passed on Pixel 10 Pro XL, Android 17/API 37, including Japanese → Chinese/English → Japanese
+model switching. Device reports remain under the ignored `app/build/` directory. Do not commit
+device identifiers, screenshots, raw logcat or local recordings.
+
+For a debug build, configure Japanese through the UI or the existing adb receiver:
+
+```bash
+adb shell am broadcast -a com.desmond.gptwake.CTRL -p com.desmond.gptwake \
+  --es cmd set_wakeword --es language ja --es phrase もしもしアシスタント
+```
+
+An optional `--es reading` supplies kana. Omitting `--es language` retains the receiver's
+Chinese/English behavior. Set `ANDROID_SERIAL` when multiple devices are connected.
 
 The simulated Android tests and Linux inference test do not exercise HyperOS firmware, physical
 microphone hardware, a secure keyguard, or the installed ChatGPT app. The project previously

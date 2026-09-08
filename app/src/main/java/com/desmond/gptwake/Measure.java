@@ -53,6 +53,7 @@ public final class Measure {
 
     public static void start(Context c, String id, String runMode, String meta) {
         final long requestedAt = SystemClock.elapsedRealtimeNanos();
+        final WakeWordStore.Selection selection = WakeWordStore.read(c);
         WRITER.execute(() -> {
             try {
                 closeQuietly("superseded");
@@ -75,7 +76,8 @@ public final class Measure {
                 writeLine("{\"type\":\"RUN_START\"," + jstr("runId", id) + "," + jstr("mode", runMode)
                         + ",\"seq\":0,\"elapsedNs\":" + runStartElapsedNs
                         + ",\"wallUtc\":\"" + isoNow() + "\""
-                        + "," + jstr("keywordSha256", keywordHash(c))
+                        + "," + jstr("recognitionLanguage", selection.language.id)
+                        + "," + jstr("keywordSha256", keywordHash(selection))
                         + ",\"score\":" + KwsEngine.keywordsScore
                         + ",\"threshold\":" + KwsEngine.keywordsThreshold
                         + ",\"trailing\":" + KwsEngine.numTrailingBlanks
@@ -170,9 +172,13 @@ public final class Measure {
         return JSONObject.quote(k) + ":" + JSONObject.quote(v == null ? "" : v);
     }
 
-    private static String keywordHash(Context context) throws Exception {
+    private static String keywordHash(WakeWordStore.Selection selection) throws Exception {
+        // Preserve historical Chinese/English hashes; Japanese has no KeywordSpotter token line.
+        String identity = selection.language == WakeLanguage.JAPANESE
+                ? selection.language.id + "\n" + selection.phrase + "\n" + selection.japaneseReading
+                : selection.keywordLine;
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(
-                WakeWordStore.keywordLine(context).getBytes(StandardCharsets.UTF_8));
+                identity.getBytes(StandardCharsets.UTF_8));
         StringBuilder result = new StringBuilder();
         for (byte value : digest) result.append(String.format(Locale.ROOT, "%02x", value));
         return result.toString();

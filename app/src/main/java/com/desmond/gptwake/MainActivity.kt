@@ -68,8 +68,7 @@ class MainActivity : ComponentActivity() {
                 val permissions: Permissions =
                     remember(permissionRevision, polled) { readPermissions(context) }
 
-                // The CMU dictionary is ~3.3MB and only needed when changing the wake word, so it
-                // loads off the main thread and the UI degrades gracefully until it is ready.
+                // Load the phoneme and Japanese reading dictionaries off the main thread.
                 val tokenizer by produceState<WakeWordTokenizer?>(null) {
                     value = withContext(Dispatchers.IO) {
                         runCatching {

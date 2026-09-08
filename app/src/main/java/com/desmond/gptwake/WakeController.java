@@ -93,6 +93,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
     private void loadModel(boolean captureDeferred) {
         try {
             AssetManager am = ctx.getAssets();
+            kws.configure(WakeWordStore.read(ctx));
             kws.load(am);
             if (stopped.get()) return;
             if (hasCommunication()) {
@@ -101,7 +102,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
             }
             // A call may have ended while the model was loading, before any capture was started.
             if (captureDeferred) AudioProbe.start("FGS");
-            kws.newStream();
+            if (!prepareStream()) return;
             AudioProbe.setFeeding(true);
             if (AudioProbe.isRunning()) {
                 set(State.KWS_LISTENING);
@@ -208,7 +209,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                 L.i("KWS_RESUME_SKIPPED captureNotRunning");
                 return;
             }
-            kws.newStream();
+            if (!prepareStream()) return;
             AudioProbe.setFeeding(true);
             set(State.KWS_LISTENING);
             L.i("KWS_RESUMED afterMs=" + delay);
@@ -224,7 +225,8 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
                 return;
             }
             AudioProbe.setFeeding(false);
-            kws.newStream();
+            set(State.KWS_MODEL_LOADING);
+            if (!prepareStream()) return;
             AudioProbe.setFeeding(true);
             set(State.KWS_LISTENING);
             L.i("STREAM_RESTARTED");
@@ -233,6 +235,24 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
 
     public String counters() {
         return "raw=" + rawHits + " accepted=" + acceptedHits + " suppressed=" + suppressedHits;
+    }
+
+    private boolean prepareStream() {
+        // Read one settings snapshot at each resume, including edits made during a voice call.
+        kws.configure(WakeWordStore.read(ctx));
+        KwsEngine.keywordsThreshold = WakeWordStore.threshold(ctx);
+        try {
+            kws.load(ctx.getAssets());
+            if (stopped.get()) return false;
+            if (hasCommunication()) {
+                pauseForCommunication();
+                return false;
+            }
+            kws.newStream();
+            return true;
+        } catch (Exception error) {
+            throw new IllegalStateException("Cannot prepare wake word recognition", error);
+        }
     }
 
     public long rawHits() {
@@ -390,7 +410,7 @@ public final class WakeController implements AudioProbe.WakeListener, AudioState
         boolean running = AudioProbe.isRunning();
         boolean live = AudioStateMonitor.hasOwnLiveCapture();
         if (running && live) {
-            kws.newStream();
+            if (!prepareStream()) return;
             AudioProbe.setFeeding(true);
             set(State.KWS_LISTENING);
             L.i("MIC_REACQUIRE_OK latencyMs=" + (SystemClock.elapsedRealtime() - t0)

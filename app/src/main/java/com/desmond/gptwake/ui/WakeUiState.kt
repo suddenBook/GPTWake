@@ -153,7 +153,7 @@ fun rememberMicLevel(active: Boolean): State<Float> {
 private fun recentEvents(limit: Int = 40): List<String> =
     L.dump().lineSequence()
         .filter { it.isNotEmpty() }
-        .filterNot { "KWS_STATS" in it || "CONFIGS" in it || "POWER" in it }
+        .filterNot { "KWS_STATS" in it || "JA_ASR_STATS" in it || "CONFIGS" in it || "POWER" in it }
         .toList()
         .takeLast(limit)
 

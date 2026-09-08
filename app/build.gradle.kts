@@ -1,6 +1,34 @@
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+abstract class PrepareJapaneseModels : DefaultTask() {
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:InputFile abstract val fetchScript: RegularFileProperty
+    @get:InputFile abstract val checksums: RegularFileProperty
+    @get:Inject abstract val execOperations: ExecOperations
+
+    @TaskAction
+    fun prepare() {
+        execOperations.exec {
+            commandLine("bash", fetchScript.get().asFile.absolutePath,
+                outputDirectory.get().dir("ja").asFile.absolutePath)
+        }
+    }
+}
+
+val prepareJapaneseModels by tasks.registering(PrepareJapaneseModels::class) {
+    group = "build setup"
+    description = "Fetch and verify the pinned offline Japanese recognition models"
+    fetchScript.set(rootProject.layout.projectDirectory.file("tools/fetch-japanese-deps.sh"))
+    checksums.set(layout.projectDirectory.file("src/main/assets/ja/SHA256SUMS"))
+    outputDirectory.set(layout.buildDirectory.dir("generated/japaneseAssets"))
 }
 
 android {
@@ -14,16 +42,19 @@ android {
         applicationId = "com.desmond.gptwake"
         minSdk = 32
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
         }
     }
 
     androidResources {
-        noCompress += listOf("onnx", "txt", "phone")
+        noCompress += listOf("onnx", "ort", "txt", "phone")
     }
+
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("tools/fixtures/japanese"))
 
     buildFeatures {
         viewBinding = false
@@ -67,10 +98,16 @@ android {
     }
 
     packaging {
+        resources.merges += listOf("META-INF/LICENSE.md", "META-INF/CONTRIBUTORS.md")
         jniLibs {
             useLegacyPackaging = false
         }
     }
+}
+
+androidComponents.onVariants { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(prepareJapaneseModels,
+        PrepareJapaneseModels::outputDirectory)
 }
 
 kotlin {
@@ -84,6 +121,8 @@ dependencies {
     // The Kotlin Gradle plugin supplies kotlin-stdlib; pinning it here would risk a
     // version skew against the compiler.
     implementation(files("libs/sherpa-onnx-1.13.4-classes.jar"))
+    // Offline Japanese kanji readings; includes the IPADIC dictionary in the APK.
+    implementation("com.atilika.kuromoji:kuromoji-ipadic:0.9.0")
 
     // Compose, on the ALPHA BOM (-> material3 1.5.0-alpha24, compose.ui 1.12.0-beta02).
     //
@@ -116,6 +155,8 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("org.mockito:mockito-core:5.23.0")
     testImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // The Views stack (appcompat, com.google.android.material, constraintlayout) is gone along

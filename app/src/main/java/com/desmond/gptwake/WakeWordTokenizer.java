@@ -39,6 +39,11 @@ public final class WakeWordTokenizer {
         /** Not fatal: the phrase works but {@link Result#errCount} syllables is short enough to
          *  invite false wakes. */
         TOO_SHORT,
+        TOO_LONG,
+        JAPANESE_LANGUAGE_REQUIRED,
+        JAPANESE_READING_REQUIRED,
+        INVALID_JAPANESE_READING,
+        JAPANESE_TOO_SHORT,
     }
 
     public static final class Result {
@@ -110,6 +115,7 @@ public final class WakeWordTokenizer {
             }
         }
 
+        JapaneseText.load();
         loaded = true;
         L.i("TOKENIZER_READY han=" + han.size() + " english=" + english.size()
                 + " modelTokens=" + valid.size() + " loadMs=" + (System.currentTimeMillis() - t0));
@@ -175,7 +181,8 @@ public final class WakeWordTokenizer {
                 i = j;
                 continue;
             }
-            return Result.fail(Err.UNSUPPORTED_CHAR, String.valueOf(c));
+            return Result.fail(JapaneseText.isKana(c) ? Err.JAPANESE_LANGUAGE_REQUIRED
+                    : Err.UNSUPPORTED_CHAR, String.valueOf(c));
         }
 
         if (tokens.isEmpty()) return Result.fail(Err.UNPARSEABLE, null);
@@ -194,6 +201,33 @@ public final class WakeWordTokenizer {
             return new Result(true, tok, display, line, Err.TOO_SHORT, null, syllables);
         }
         return new Result(true, tok, display, line, Err.NONE, null, syllables);
+    }
+
+    public Result convert(String phrase, WakeLanguage language, String japaneseReading) {
+        if (language != WakeLanguage.JAPANESE) return convert(phrase);
+        String p = JapaneseText.normalizeInput(phrase);
+        if (p.isEmpty()) return Result.fail(Err.EMPTY, null);
+        if (p.codePointCount(0, p.length()) > 40) return Result.fail(Err.TOO_LONG, null);
+        for (int c : p.codePoints().toArray()) {
+            if (!JapaneseText.isPhraseCharacter(c)) {
+                return Result.fail(Err.UNSUPPORTED_CHAR, new String(Character.toChars(c)));
+            }
+        }
+        String override = JapaneseText.normalizeInput(japaneseReading);
+        if (override.length() > 40) return Result.fail(Err.TOO_LONG, null);
+        if (!override.codePoints().allMatch(c -> JapaneseText.isKana(c) || c == ' ')) {
+            return Result.fail(Err.INVALID_JAPANESE_READING, null);
+        }
+        String reading = override.isEmpty() ? JapaneseText.reading(p) : JapaneseText.kana(override);
+        if (reading.codePoints().anyMatch(JapaneseText::isHan)) {
+            return Result.fail(Err.JAPANESE_READING_REQUIRED, null);
+        }
+        int mora = JapaneseText.moraCount(reading);
+        if (mora == 0 || reading.startsWith("ー")) {
+            return Result.fail(Err.INVALID_JAPANESE_READING, null);
+        }
+        return new Result(true, "", reading, "",
+                mora < 4 ? Err.JAPANESE_TOO_SHORT : Err.NONE, null, mora);
     }
 
     /** Rough syllable estimate, used by the UI to warn about over-short phrases. */

@@ -150,14 +150,15 @@ public class ControlReceiver extends BroadcastReceiver {
                     L.e("CTRL_TOKENIZER_FAIL", t);
                     break;
                 }
-                WakeWordTokenizer.Result r = tk.convert(phrase);
+                WakeLanguage language = WakeLanguage.fromId(intent.getStringExtra("language"));
+                WakeWordTokenizer.Result r = tk.convert(phrase, language,
+                        intent.getStringExtra("reading"));
                 L.i("CTRL_WAKEWORD phrase=" + phrase + " ok=" + r.ok
                         + " tokens=[" + r.tokens + "] readable=[" + r.readable + "]"
                         + " line=[" + r.keywordLine + "] err=" + r.err
                         + (r.errArg == null ? "" : " arg=" + r.errArg));
                 if (r.ok) {
-                    WakeWordStore.save(app, phrase, r.keywordLine);
-                    KwsEngine.customKeywordLine = r.keywordLine;
+                    WakeWordStore.save(app, phrase, language, r);
                     WakeController wcx = WakeService.controller();
                     if (wcx != null) wcx.restartStream();
                     WakeService.refresh(app);

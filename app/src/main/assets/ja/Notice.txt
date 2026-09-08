@@ -1,0 +1,16 @@
+Japanese speech recognition: Powered by Moonshine AI.
+This Moonshine AI Model is licensed under the Moonshine AI Community License,
+Copyright © Moonshine AI Ltd. All Rights Reserved.
+The full model license is in LICENSE in this directory. The Japanese model
+weights are not covered by GPTWake's Apache-2.0 source-code license.
+
+Model: sherpa-onnx-moonshine-tiny-ja-quantized-2026-02-27
+Source: https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
+The exported model files are redistributed without modification.
+
+Voice activity detection: Silero VAD, MIT License (LICENSE-silero.txt).
+https://github.com/snakers4/silero-vad
+
+Japanese readings: Kuromoji 0.9.0, Apache-2.0, with IPADIC.
+https://github.com/atilika/kuromoji
+Its library and dictionary notices are retained in the APK's META-INF resources.

@@ -72,4 +72,33 @@ public class SettingsTest {
         assertThrows(IllegalArgumentException.class, () -> WakeWordStore.saveThreshold(context, Float.NaN));
         assertThrows(IllegalArgumentException.class, () -> WakeWordStore.saveThreshold(context, 1.1f));
     }
+
+    @Test
+    public void japaneseLanguageAndReadingSurviveDirectBootAndReset() throws Exception {
+        var tokenizer = new WakeWordTokenizer();
+        tokenizer.load(context.getAssets());
+        var result = tokenizer.convert("明日", WakeLanguage.JAPANESE, "あす");
+        WakeWordStore.save(context, "明日", WakeLanguage.JAPANESE, result);
+        var locked = context.createDeviceProtectedStorageContext();
+        var stored = WakeWordStore.read(locked);
+        assertEquals(WakeLanguage.JAPANESE, stored.language);
+        assertEquals("明日", stored.phrase);
+        assertEquals("あす", stored.japaneseReading);
+
+        WakeWordStore.reset(context);
+        assertEquals(WakeLanguage.ZH_EN, WakeWordStore.language(locked));
+        assertEquals(WakeWordStore.DEFAULT_LINE, WakeWordStore.read(locked).keywordLine);
+        assertEquals("", WakeWordStore.read(locked).japaneseReading);
+    }
+
+    @Test
+    public void legacySettingsKeepTheirOriginalLanguageAndPhrase() {
+        context.createDeviceProtectedStorageContext().getSharedPreferences("wakeword", 0)
+                .edit().putString("phrase", "open sesame").putString("line", "old tokens")
+                .remove("language").commit();
+        var stored = WakeWordStore.read(context);
+        assertEquals(WakeLanguage.ZH_EN, stored.language);
+        assertEquals("open sesame", stored.phrase);
+        assertEquals("old tokens", stored.keywordLine);
+    }
 }

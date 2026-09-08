@@ -9,6 +9,15 @@
 
     <string name="wake_word_title">唤醒词</string>
     <string name="wake_word_hint">换一个唤醒词（中文或英文）</string>
+    <string name="wake_language">唤醒词语言</string>
+    <string name="language_chinese_english">中文 / 英文</string>
+    <string name="language_japanese">日语</string>
+    <string name="wake_word_hint_japanese">日语词句，例如 おはようございます</string>
+    <string name="japanese_reading_hint">假名读音（选填）</string>
+    <string name="japanese_example">填入「もしもし」（moshi moshi）</string>
+    <string name="japanese_reading_help">人名或汉字有其他读音时，可用平假名或片假名指定发音。</string>
+    <string name="japanese_wake_help">请单独念出完整唤醒词，并稍作停顿。日语采用离线语音识别，周围有人说话时可能更耗电。请先用测试模式验证所选词句。</string>
+    <string name="japanese_matching_title">日语词句匹配</string>
     <string name="action_apply">应用</string>
     <string name="action_reset">恢复默认</string>
 
@@ -65,7 +74,12 @@
     <string name="err_empty">唤醒词为空</string>
     <string name="err_unsupported_han">不支持的汉字：%1$s</string>
     <string name="err_unknown_english">英文词典中没有：%1$s</string>
-    <string name="err_unsupported_char">不支持的字符：%1$s（只支持中文和英文）</string>
+    <string name="err_unsupported_char">当前语言不支持的字符：%1$s</string>
+    <string name="err_too_long">日语唤醒词及读音各不能超过 40 个字符</string>
+    <string name="err_select_japanese">使用平假名或片假名时，请选择日语</string>
+    <string name="err_japanese_reading_required">词典中没有这个汉字的读音，请填写假名读音</string>
+    <string name="err_japanese_reading">请用平假名或片假名填写有效读音</string>
+    <string name="warn_japanese_short">只有 %1$d 拍。建议使用有辨识度的 6–12 拍词句，减少误唤醒。</string>
     <string name="err_unparseable">无法解析这个唤醒词</string>
     <string name="err_unsupported_phone">模型不支持的发音单元：%1$s</string>
     <string name="warn_too_short">警告：只有约 %1$d 个音节，太短容易误唤醒，建议 4–6 个音节</string>

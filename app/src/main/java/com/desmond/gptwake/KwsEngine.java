@@ -33,6 +33,9 @@ public final class KwsEngine {
 
     private volatile KeywordSpotter spotter;
     private volatile OnlineStream stream;
+    private volatile JapaneseWakeEngine japanese;
+    private WakeWordStore.Selection selection = new WakeWordStore.Selection(
+            WakeLanguage.ZH_EN, WakeWordStore.DEFAULT_PHRASE, WakeWordStore.DEFAULT_LINE, "");
     /** Custom keyword line; when set it is passed to createStream() instead of keywords.txt. */
     public static volatile String customKeywordLine;
 
@@ -45,10 +48,22 @@ public final class KwsEngine {
             new java.util.concurrent.atomic.AtomicLong();
 
     public boolean isLoaded() {
-        return spotter != null;
+        return spotter != null || japanese != null;
+    }
+
+    public synchronized void configure(WakeWordStore.Selection selection) {
+        this.selection = selection;
+        customKeywordLine = selection.keywordLine;
     }
 
     public synchronized void load(AssetManager assets) throws Exception {
+        if (selection.language == WakeLanguage.JAPANESE) {
+            if (japanese != null) return;
+            release();
+            japanese = JapaneseWakeEngine.load(assets);
+            return;
+        }
+        if (japanese != null) release();
         if (spotter != null) return;
 
         try {
@@ -101,6 +116,11 @@ public final class KwsEngine {
     }
 
     public synchronized void newStream() {
+        if (japanese != null) {
+            japanese.newStream(selection.phrase, selection.japaneseReading);
+            L.i("JA_STREAM_NEW phrase=" + selection.phrase);
+            return;
+        }
         releaseStream();
         String keywords = streamKeywords();
         stream = spotter.createStream(keywords);
@@ -122,6 +142,7 @@ public final class KwsEngine {
     }
 
     public synchronized void releaseStream() {
+        if (japanese != null) japanese.releaseStream();
         OnlineStream s = stream;
         stream = null;
         if (s != null) {
@@ -135,6 +156,10 @@ public final class KwsEngine {
 
     /** Feeds one frame and returns the detected keyword, or null. */
     public synchronized String accept(float[] samples, int sampleRate) {
+        if (japanese != null) {
+            acceptCalls.incrementAndGet();
+            return japanese.accept(samples, sampleRate);
+        }
         KeywordSpotter sp = spotter;
         OnlineStream st = stream;
         if (sp == null || st == null) return null;
@@ -163,6 +188,9 @@ public final class KwsEngine {
 
     public synchronized void release() {
         releaseStream();
+        JapaneseWakeEngine ja = japanese;
+        japanese = null;
+        if (ja != null) ja.release();
         KeywordSpotter sp = spotter;
         spotter = null;
         if (sp != null) {

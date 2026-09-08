@@ -9,6 +9,15 @@
 
     <string name="wake_word_title">Wake word</string>
     <string name="wake_word_hint">Use a different wake word (Chinese or English)</string>
+    <string name="wake_language">Wake word language</string>
+    <string name="language_chinese_english">Chinese / English</string>
+    <string name="language_japanese">Japanese</string>
+    <string name="wake_word_hint_japanese">Japanese phrase, e.g. おはようございます</string>
+    <string name="japanese_reading_hint">Kana reading (optional)</string>
+    <string name="japanese_example">Use もしもし (moshi moshi)</string>
+    <string name="japanese_reading_help">For names or kanji with another reading, enter the pronunciation in hiragana or katakana.</string>
+    <string name="japanese_wake_help">Say the complete phrase on its own, then pause briefly. Japanese uses offline speech recognition and may use more battery while people are speaking. Test your phrase before relying on it.</string>
+    <string name="japanese_matching_title">Japanese phrase matching</string>
     <string name="action_apply">Apply</string>
     <string name="action_reset">Reset to default</string>
 
@@ -65,7 +74,12 @@
     <string name="err_empty">The wake word is empty</string>
     <string name="err_unsupported_han">Unsupported Chinese character: %1$s</string>
     <string name="err_unknown_english">Not in the English dictionary: %1$s</string>
-    <string name="err_unsupported_char">Unsupported character: %1$s (only Chinese and English are supported)</string>
+    <string name="err_unsupported_char">Unsupported character for this language: %1$s</string>
+    <string name="err_too_long">Keep the Japanese phrase and its reading to 40 characters each</string>
+    <string name="err_select_japanese">Select Japanese to use hiragana or katakana</string>
+    <string name="err_japanese_reading_required">This kanji reading is unknown. Enter its kana reading.</string>
+    <string name="err_japanese_reading">Enter a pronunciation in hiragana or katakana</string>
+    <string name="warn_japanese_short">Only %1$d mora. A distinctive phrase of 6–12 mora reduces accidental wakes.</string>
     <string name="err_unparseable">Couldn\'t parse this wake word</string>
     <string name="err_unsupported_phone">Sound not supported by the model: %1$s</string>
     <string name="warn_too_short">Warning: only about %1$d syllables. Short wake words trigger false wakes easily — 4–6 syllables is recommended.</string>

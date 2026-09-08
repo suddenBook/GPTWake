@@ -1,9 +1,14 @@
 # 功耗分析 / Power analysis
 
-> 结论先行：**这个 app 目前没有任何 VAD 或能量门控**，encoder 对 100% 的音频无条件推理，
+> 版本范围：下文记录中英 Zipformer KWS 的功耗分析。1.1.0 新增的日语模式使用
+> Silero VAD 和独立的 Moonshine 识别线程，不能直接套用下文的推理频率或测量结论。
+> 日语的录音线程统计只覆盖 VAD；完整推理开销请结合 `JA_ASR_STATS`、
+> `japanese-asr` 线程及进程 CPU 统计。日语长期耗电尚未完成测量。
+
+> 中英模式没有 VAD 或能量门控，encoder 对 100% 的音频无条件推理，
 > 包括一整天的安静时间。这是最大的一块可省的功耗，而且它不是"实现得不好"，是**完全不存在**。
 >
-> TL;DR: there is **no VAD or energy gate of any kind**. The encoder runs unconditionally on 100%
+> The Chinese/English encoder has no VAD or energy gate and runs unconditionally on 100%
 > of wall-clock audio, silence included. That is the single largest available saving, and it is not
 > partially implemented — it is entirely absent.
 

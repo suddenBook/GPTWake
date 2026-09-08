@@ -96,6 +96,13 @@ jobs:
         shell: bash
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
 
+      - name: Verify Japanese speech with the bundled native models
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/gptwake-native"
+          "$RUNNER_TEMP/gptwake-native/bin/pip" install -r tools/requirements-native.txt
+          "$RUNNER_TEMP/gptwake-native/bin/python" tools/test_native_japanese.py
+
       - name: Align, sign, and verify APK
         shell: bash
         env:

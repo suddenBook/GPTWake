@@ -172,4 +172,26 @@ public class WakeControllerTest {
         controller.start();
         audio.verify(() -> AudioProbe.start(anyString()));
     }
+
+    @Test
+    public void languageChangeDuringCallIsAppliedWhenListeningResumes() {
+        listen();
+        monitor.when(AudioStateMonitor::isCommunicationMode).thenReturn(true);
+        controller.onAudioStateChanged("call started");
+        RuntimeEnvironment.getApplication().createDeviceProtectedStorageContext()
+                .getSharedPreferences("wakeword", 0).edit()
+                .putString("language", "ja").putString("phrase", "こんにちは")
+                .putString("japanese_reading", "こんにちは").commit();
+        clearInvocations(engine);
+        controller.restartStream();
+        verify(engine, never()).configure(any());
+
+        monitor.when(AudioStateMonitor::isCommunicationMode).thenReturn(false);
+        monitor.when(AudioStateMonitor::hasOwnLiveCapture).thenReturn(true);
+        controller.onAudioStateChanged("call ended");
+        verify(engine).configure(argThat(selection -> selection.language == WakeLanguage.JAPANESE
+                && selection.phrase.equals("こんにちは")));
+        verify(engine).newStream();
+        assertEquals(WakeController.State.KWS_LISTENING, controller.state());
+    }
 }

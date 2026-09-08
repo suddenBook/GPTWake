@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLocale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -58,8 +61,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.desmond.gptwake.Cfg
 import com.desmond.gptwake.KwsEngine
+import com.desmond.gptwake.JapaneseText
 import com.desmond.gptwake.R
 import com.desmond.gptwake.WakeController
+import com.desmond.gptwake.WakeLanguage
 import com.desmond.gptwake.WakeWordStore
 import com.desmond.gptwake.WakeWordTokenizer
 
@@ -130,11 +135,22 @@ private fun ScreenBody(
     onWakeWordApplied: (String) -> Unit,
     onWakeWordReset: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var settingsRevision by remember { mutableIntStateOf(0) }
+    val selection = remember(settingsRevision, ui) { WakeWordStore.read(context) }
+    val applyWord: (String) -> Unit = {
+        settingsRevision++
+        onWakeWordApplied(it)
+    }
+    val resetWord: () -> Unit = {
+        onWakeWordReset()
+        settingsRevision++
+    }
     if (permissions.next != SetupStep.DONE) {
         SetupBanner(compact, onContinue = { onRunStep(permissions.next) })
     }
 
-    StatusCard(ui = ui, compact = compact, onToggle = onToggleService)
+    StatusCard(ui = ui, phrase = selection.phrase, compact = compact, onToggle = onToggleService)
 
     if (wide) {
         // IntrinsicSize.Max fixes the row to the taller column, then the last card in each column
@@ -147,8 +163,8 @@ private fun ScreenBody(
                 Modifier.weight(1f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                WakeWordCard(tokenizer, onWakeWordApplied, onWakeWordReset)
-                SensitivityCard(onRestartListening, Modifier.weight(1f))
+                WakeWordCard(tokenizer, selection, applyWord, resetWord)
+                SensitivityCard(onRestartListening, selection.language, Modifier.weight(1f))
             }
             Column(
                 Modifier.weight(1f).fillMaxHeight(),
@@ -159,8 +175,8 @@ private fun ScreenBody(
             }
         }
     } else {
-        WakeWordCard(tokenizer, onWakeWordApplied, onWakeWordReset)
-        SensitivityCard(onRestartListening)
+        WakeWordCard(tokenizer, selection, applyWord, resetWord)
+        SensitivityCard(onRestartListening, selection.language)
         PermissionsCard(permissions, onRunStep)
         TestModeCard()
     }
@@ -180,11 +196,9 @@ private fun ScreenBody(
 // ---------------------------------------------------------------- status
 
 @Composable
-private fun StatusCard(ui: WakeUiState, compact: Boolean, onToggle: () -> Unit) {
-    val context = LocalContext.current
+private fun StatusCard(ui: WakeUiState, phrase: String, compact: Boolean, onToggle: () -> Unit) {
     val mode = ui.state.toIndicatorMode(ui.foreground)
     val level by rememberMicLevel(active = ui.state.isLive())
-    val phrase = WakeWordStore.phrase(context)
 
     // The container carries the state, so the card is readable across the room without reading any
     // text. Colour is effects motion — critically damped, so it never overshoots.
@@ -325,43 +339,77 @@ private fun SetupExplanation(modifier: Modifier = Modifier) {
 @Composable
 private fun WakeWordCard(
     tokenizer: WakeWordTokenizer?,
+    current: WakeWordStore.Selection,
     onApplied: (String) -> Unit,
     onReset: () -> Unit,
 ) {
     val context = LocalContext.current
     var typed by rememberSaveable { mutableStateOf("") }
-    var revision by remember { mutableIntStateOf(0) }
-    val current = remember(revision) { WakeWordStore.phrase(context) }
-    val currentTokens = remember(revision) {
-        WakeWordStore.keywordLine(context).substringBefore(" @")
-    }
-    val result = remember(typed, tokenizer) {
-        if (typed.isBlank()) null else tokenizer?.convert(typed)
+    var languageId by rememberSaveable { mutableStateOf(current.language.id) }
+    var reading by rememberSaveable { mutableStateOf("") }
+    val language = WakeLanguage.fromId(languageId)
+    val japanese = language == WakeLanguage.JAPANESE
+    val result = remember(typed, reading, language, tokenizer) {
+        if (typed.isBlank()) null else tokenizer?.convert(typed, language, reading)
     }
 
     SectionCard(stringResource(R.string.wake_word_title)) {
         Text(
-            current,
+            current.phrase,
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.primary,
         )
         Text(
-            currentTokens,
+            if (current.language == WakeLanguage.JAPANESE) current.japaneseReading
+            else current.keywordLine.substringBefore(" @"),
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
+        Text(stringResource(R.string.wake_language), modifier = Modifier.padding(top = 16.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (option in WakeLanguage.values()) {
+                FilterChip(
+                    selected = language == option,
+                    onClick = { languageId = option.id },
+                    label = {
+                        Text(stringResource(if (option == WakeLanguage.JAPANESE)
+                            R.string.language_japanese else R.string.language_chinese_english))
+                    },
+                    modifier = Modifier.testTag("wakeLanguage-${option.id}"),
+                )
+            }
+        }
+
         OutlinedTextField(
             value = typed,
             onValueChange = { typed = it },
-            label = { Text(stringResource(R.string.wake_word_hint)) },
+            label = { Text(stringResource(if (japanese) R.string.wake_word_hint_japanese
+                else R.string.wake_word_hint)) },
             singleLine = true,
             isError = result != null && !result.ok,
             shape = MaterialTheme.shapes.large,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp).testTag("wakePhraseInput"),
         )
+
+        if (japanese) {
+            TextButton(
+                onClick = { typed = "もしもし"; reading = "" },
+                modifier = Modifier.testTag("japaneseExample"),
+            ) { Text(stringResource(R.string.japanese_example)) }
+            OutlinedTextField(
+                value = reading,
+                onValueChange = { reading = it },
+                label = { Text(stringResource(R.string.japanese_reading_hint)) },
+                supportingText = { Text(stringResource(R.string.japanese_reading_help)) },
+                singleLine = true,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("wakeReadingInput"),
+            )
+            Hint(stringResource(R.string.japanese_wake_help))
+        }
 
         val message = result?.messageOrNull()
         when {
@@ -376,7 +424,8 @@ private fun WakeWordCard(
 
             result != null && result.ok -> Text(
                 // For English the readable form and the model tokens are the same CMU string.
-                if (result.readable == result.tokens) result.tokens
+                if (result.tokens.isEmpty()) result.readable
+                else if (result.readable == result.tokens) result.tokens
                 else result.readable + "\n" + result.tokens,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
@@ -391,18 +440,19 @@ private fun WakeWordCard(
         ) {
             TextButton({
                 typed = ""
+                reading = ""
+                languageId = WakeLanguage.ZH_EN.id
                 onReset()
-                revision++
             }) { Text(stringResource(R.string.action_reset)) }
 
             Button(
                 onClick = {
                     val r = result ?: return@Button
-                    WakeWordStore.save(context, typed.trim(), r.keywordLine)
-                    KwsEngine.customKeywordLine = r.keywordLine
-                    onApplied(typed.trim())
+                    val phrase = if (japanese) JapaneseText.normalizeInput(typed) else typed.trim()
+                    WakeWordStore.save(context, phrase, language, r)
+                    onApplied(phrase)
                     typed = ""
-                    revision++
+                    reading = ""
                 },
                 enabled = result != null && result.ok,
             ) { Text(stringResource(R.string.action_apply)) }
@@ -438,12 +488,27 @@ private fun WakeWordTokenizer.Result.messageOrNull(): String? = when (err) {
         stringResource(R.string.err_unsupported_phone, errArg.orEmpty())
 
     WakeWordTokenizer.Err.TOO_SHORT -> stringResource(R.string.warn_too_short, errCount)
+    WakeWordTokenizer.Err.TOO_LONG -> stringResource(R.string.err_too_long)
+    WakeWordTokenizer.Err.JAPANESE_LANGUAGE_REQUIRED -> stringResource(R.string.err_select_japanese)
+    WakeWordTokenizer.Err.JAPANESE_READING_REQUIRED -> stringResource(R.string.err_japanese_reading_required)
+    WakeWordTokenizer.Err.INVALID_JAPANESE_READING -> stringResource(R.string.err_japanese_reading)
+    WakeWordTokenizer.Err.JAPANESE_TOO_SHORT -> stringResource(R.string.warn_japanese_short, errCount)
 }
 
 // ---------------------------------------------------------------- sensitivity
 
 @Composable
-private fun SensitivityCard(onCommit: () -> Unit, modifier: Modifier = Modifier) {
+private fun SensitivityCard(
+    onCommit: () -> Unit,
+    language: WakeLanguage,
+    modifier: Modifier = Modifier,
+) {
+    if (language == WakeLanguage.JAPANESE) {
+        SectionCard(stringResource(R.string.japanese_matching_title), modifier = modifier) {
+            Hint(stringResource(R.string.japanese_wake_help))
+        }
+        return
+    }
     val context = LocalContext.current
     var value by remember { mutableFloatStateOf(WakeWordStore.threshold(context).coerceIn(0.20f, 0.60f)) }
 

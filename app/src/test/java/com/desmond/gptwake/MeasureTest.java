@@ -2,7 +2,11 @@ package com.desmond.gptwake;
 
 import static org.junit.Assert.*;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -48,5 +52,49 @@ public class MeasureTest {
         for (int i = 0; i < lines.size(); i++) {
             assertEquals(i, new JSONObject(lines.get(i)).getInt("seq"));
         }
+    }
+
+    @Test
+    public void measurementIdentifiesLanguageAndPhraseAtTheTimeItWasRequested() throws Exception {
+        var context = RuntimeEnvironment.getApplication();
+        var preferences = context.createDeviceProtectedStorageContext()
+                .getSharedPreferences("wakeword", 0);
+        ExecutorService writer = ReflectionHelpers.getStaticField(Measure.class, "WRITER");
+        CountDownLatch release = new CountDownLatch(1);
+        writer.execute(() -> {
+            try { release.await(3, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        try {
+            WakeWordStore.reset(context);
+            Measure.start(context, "legacy", "test", null);
+            Measure.end("done");
+            preferences.edit().putString("language", "ja").putString("phrase", "こんにちは")
+                    .putString("japanese_reading", "こんにちは").commit();
+            Measure.start(context, "japanese-one", "test", null);
+            Measure.end("done");
+            preferences.edit().putString("phrase", "おはよう")
+                    .putString("japanese_reading", "おはよう").commit();
+            Measure.start(context, "japanese-two", "test", null);
+            Measure.end("done");
+            WakeWordStore.reset(context);
+        } finally {
+            release.countDown();
+        }
+        writer.submit(() -> {}).get(5, TimeUnit.SECONDS);
+        var records = new HashMap<String, JSONObject>();
+        var files = Measure.dir(context).listFiles((directory, name) -> name.endsWith(".jsonl"));
+        assertNotNull(files);
+        for (var file : files) {
+            var record = new JSONObject(Files.readAllLines(file.toPath()).get(0));
+            records.put(record.getString("runId"), record);
+        }
+        assertEquals("zh-en", records.get("legacy").getString("recognitionLanguage"));
+        String legacyHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(WakeWordStore.DEFAULT_LINE.getBytes(StandardCharsets.UTF_8)));
+        assertEquals(legacyHash, records.get("legacy").getString("keywordSha256"));
+        assertEquals("ja", records.get("japanese-one").getString("recognitionLanguage"));
+        assertNotEquals(records.get("japanese-one").getString("keywordSha256"),
+                records.get("japanese-two").getString("keywordSha256"));
     }
 }

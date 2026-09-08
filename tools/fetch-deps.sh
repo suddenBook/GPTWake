@@ -30,4 +30,5 @@ python3 "$ROOT/tools/gen_pinyin_tokens.py" \
   "$TMP/$MODEL/tokens.txt" "$ROOT/app/src/main/assets/kws/pinyin_tokens.txt"
 
 rm -rf "$TMP"
+bash "$ROOT/tools/fetch-japanese-deps.sh"
 echo "完成。"
